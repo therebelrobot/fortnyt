@@ -3,7 +3,7 @@
 # Build stage runs on the build machine's own architecture ($BUILDPLATFORM): its output is
 # plain JavaScript + static files, identical for every target, so arm64 images never have to
 # run npm or Vite under QEMU emulation.
-FROM --platform=$BUILDPLATFORM node:24-alpine AS build
+FROM --platform=$BUILDPLATFORM node:26-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -11,7 +11,7 @@ COPY . .
 RUN npm run build
 
 # Runtime: Node and two build outputs. No node_modules — the server is one bundled file.
-FROM node:24-alpine
+FROM node:26-alpine
 LABEL org.opencontainers.image.source="https://github.com/therebelrobot/fortnyt" \
       org.opencontainers.image.description="Self-hosted pay-period budget with SimpleFIN transaction assessment" \
       org.opencontainers.image.licenses="Unlicense"
