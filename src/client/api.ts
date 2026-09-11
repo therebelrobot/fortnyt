@@ -7,6 +7,7 @@ import type {
   Item,
   ItemInput,
   LedgerResponse,
+  OccurrenceMove,
   Person,
   PersonInput,
   Reserve,
@@ -39,9 +40,17 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // Non-JSON body — e.g. the plain-text "Unauthorized" that a 401 carries.
+    }
+  }
   if (!res.ok) {
-    throw new ApiError(data?.error ?? `Request failed (${res.status})`, res.status, data?.code ?? 'error', data?.issues ?? []);
+    const d = data as { error?: string; code?: string; issues?: { path: string; message: string }[] } | null;
+    throw new ApiError(d?.error ?? `Request failed (${res.status})`, res.status, d?.code ?? 'error', d?.issues ?? []);
   }
   return data as T;
 }
@@ -87,6 +96,11 @@ export const api = {
   createItem: (i: ItemInput) => req<Item>('POST', '/api/items', i),
   updateItem: (id: number, i: ItemInput) => req<Item>('PUT', `/api/items/${id}`, i),
   deleteItem: (id: number) => req<{ ok: true }>('DELETE', `/api/items/${id}`),
+
+  moveOccurrence: (itemId: number, fromDate: string, toDate: string) =>
+    req<OccurrenceMove>('POST', `/api/items/${itemId}/moves`, { fromDate, toDate }),
+  undoMove: (itemId: number, fromDate: string) =>
+    req<{ ok: true }>('DELETE', `/api/items/${itemId}/moves/${fromDate}`),
 
   accounts: () => req<Account[]>('GET', '/api/accounts'),
   createAccount: (a: AccountInput) => req<Account>('POST', '/api/accounts', a),

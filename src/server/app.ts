@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { Hono, type Context } from 'hono';
 import { basicAuth } from 'hono/basic-auth';
+import { HTTPException } from 'hono/http-exception';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { z } from 'zod';
 import { diffDays, isISODate, localDateOf } from '../shared/dates';
@@ -18,6 +19,7 @@ import {
   claimSchema,
   itemSchema,
   manualTxnSchema,
+  occurrenceMoveSchema,
   personSchema,
   rangeSchema,
   reserveSchema,
@@ -72,6 +74,7 @@ export function createApp(deps: AppDeps) {
       txnsBetween: (f, t, o) => repo.txnsBetween(f, t, o),
       txnsForItem: (id, f, t) => repo.txnsForItem(id, f, t),
       txnsForReserve: (id, f, t) => repo.txnsForReserve(id, f, t),
+      movesForItem: (id) => repo.movesForItem(id),
     };
     const person = c?.req.query('person');
     if (!person || !/^\d+$/.test(person)) return household;
@@ -123,6 +126,11 @@ export function createApp(deps: AppDeps) {
   }
 
   app.onError((err, c) => {
+    // basicAuth (and any future Hono middleware) signals auth failure by throwing an
+    // HTTPException that carries the prepared 401 + WWW-Authenticate response. Without
+    // this branch the 401 falls through to the generic 500 below and the browser never
+    // sees the header it needs to show the credential prompt.
+    if (err instanceof HTTPException) return err.getResponse();
     if (err instanceof z.ZodError) {
       return c.json(
         { error: 'Some fields need attention.', code: 'invalid', issues: err.issues.map((i) => ({ path: i.path.join('.'), message: i.message })) },
@@ -184,6 +192,24 @@ export function createApp(deps: AppDeps) {
 
   app.delete('/api/items/:id', (c) => {
     if (!repo.deleteItem(Number(c.req.param('id')))) throw new HttpError(404, 'No such budget line.');
+    return c.json({ ok: true });
+  });
+
+  // --- occurrence moves --------------------------------------------------------
+
+  app.post('/api/items/:id/moves', async (c) => {
+    const itemId = Number(c.req.param('id'));
+    const item = repo.getItem(itemId);
+    if (!item) throw new HttpError(404, 'No such budget line.');
+    if (item.allocation !== 'due' || item.kind !== 'expense') throw new HttpError(400, 'Only on-date expense lines can be rescheduled.');
+    const input = await body(c, occurrenceMoveSchema);
+    return c.json(repo.moveOccurrence(itemId, input.fromDate, input.toDate), 201);
+  });
+
+  app.delete('/api/items/:id/moves/:fromDate', (c) => {
+    const fromDate = c.req.param('fromDate');
+    if (!isISODate(fromDate)) throw new HttpError(400, 'Use a real date in YYYY-MM-DD form.');
+    if (!repo.deleteMove(Number(c.req.param('id')), fromDate)) throw new HttpError(404, 'No such move.');
     return c.json({ ok: true });
   });
 

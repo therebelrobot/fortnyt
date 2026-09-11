@@ -204,8 +204,9 @@ function Day({
 
 function PlannedChip({ p }: { p: PlannedEntry }) {
   const late = p.status === 'late' || p.status === 'overdue';
+  const deferred = p.status === 'deferred';
   return (
-    <span className={`chip planned ${late ? 'late' : ''}`} style={{ ['--c' as string]: p.color ?? 'var(--verdigris)' }}>
+    <span className={`chip planned ${late ? 'late' : ''} ${deferred ? 'deferred' : ''}`} style={{ ['--c' as string]: p.color ?? 'var(--verdigris)' }}>
       <span>{p.name}</span>
       <span className="money">{money(p.kind === 'income' ? p.amountCents : -p.amountCents)}</span>
     </span>
@@ -237,7 +238,7 @@ function DayDetail({ day, onRule }: { day: CalendarDay; onRule: (t: Txn) => void
         <table className="lines stack">
           <tbody>
             {day.planned.map((p) => (
-              <tr key={p.key} className="planned">
+              <tr key={p.key} className={`planned ${p.status === 'deferred' ? 'deferred' : ''}`}>
                 <td className="desc">{p.name}</td>
                 <td className="assign-cell">
                   <Tag status={p.status} />

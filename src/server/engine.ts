@@ -11,6 +11,7 @@
 
 import { addDays, diffDays, eachDay, maxDate, minDate, toDayNum } from '../shared/dates';
 import {
+  applyMoves,
   occurrences,
   periodByIndex,
   periodIndexOf,
@@ -22,6 +23,7 @@ import type {
   Allocation,
   Assessment,
   LensInfo,
+  OccurrenceMove,
   Person,
   Reserve,
   ReserveDetail,
@@ -52,6 +54,8 @@ export interface EngineData {
   reserves: Reserve[];
   /** In-budget transactions assigned straight to a reserve (not via a line), dated in [from, to]. */
   txnsForReserve(reserveId: number, from: ISODate, to: ISODate): Txn[];
+  /** Manual reschedules of this due line's occurrences. Irrelevant for spread/reserve lines. */
+  movesForItem(itemId: number): OccurrenceMove[];
   /** set by applyLens; absent = whole household */
   lens?: LensInfo;
 }
@@ -60,6 +64,12 @@ export interface EngineData {
 const MAX_TOLERANCE = 31;
 /** Occurrence look-around for cycle math. Must exceed the longest cycle (yearly). */
 const CYCLE_PAD = 400;
+/**
+ * How far back an unpaid due line keeps resurfacing as still-owed debt in later periods.
+ * A safety bound against unbounded scans, not a business rule — genuinely stale unpaid
+ * bills older than this need a human decision (pay it, or edit the line), not more compute.
+ */
+const CARRY_LOOKBACK_DAYS = 1095;
 
 // ---------------------------------------------------------------------------
 // Allocation helpers
@@ -82,16 +92,19 @@ function tolerance(item: Item): number {
 /**
  * Which date a transaction "belongs to" for budgeting.
  * - manual override wins
- * - due lines (and income): the nearest due date within ± tolerance. This is what lets a
- *   paycheck that lands a day early, or rent paid on the 30th, still count toward the
- *   right due date — even when that due date is in the neighbouring pay period.
+ * - due lines (and income): the nearest due date within ± tolerance, after applying any manual
+ *   occurrence moves. This is what lets a paycheck that lands a day early, or rent paid on the
+ *   30th, still count toward the right due date — even when that due date is in the
+ *   neighbouring pay period.
  * - spread/reserve lines: the transaction's own date.
  */
-export function effectiveDate(txn: Txn, item: Item | undefined, pay: PaySchedule): ISODate {
+export function effectiveDate(txn: Txn, item: Item | undefined, pay: PaySchedule, moves: OccurrenceMove[] = []): ISODate {
   if (txn.occurrenceDate) return txn.occurrenceDate;
   if (!item || effectiveAllocation(item) !== 'due') return txn.date;
   const tol = tolerance(item);
-  const candidates = occurrences(item, pay, addDays(txn.date, -tol), addDays(txn.date, tol));
+  const from = addDays(txn.date, -tol);
+  const to = addDays(txn.date, tol);
+  const candidates = applyMoves(occurrences(item, pay, from, to), moves, from, to);
   if (candidates.length === 0) return txn.date;
   let best = candidates[0];
   let bestDist = Math.abs(diffDays(best, txn.date));
@@ -327,10 +340,11 @@ export function simulatePot(pot: Pot, data: EngineData, until: ISODate, projectB
 
   for (const item of pot.contributes) {
     const tol = tolerance(item);
-    for (const occ of occurrences(item, data.pay, start, until)) {
+    const moves = data.movesForItem(item.id);
+    for (const occ of applyMoves(occurrences(item, data.pay, start, until), moves, start, until)) {
       const matched = data
         .txnsForItem(item.id, addDays(occ, -tol), addDays(occ, tol))
-        .filter((t) => t.kind === 'normal' && effectiveDate(t, item, data.pay) === occ);
+        .filter((t) => t.kind === 'normal' && effectiveDate(t, item, data.pay, moves) === occ);
       if (matched.length) sim.inflow[idx(occ)] += -sum(matched.map((t) => t.amountCents));
       else if (occ > data.today) sim.inflow[idx(occ)] += item.amountCents;
     }
@@ -377,6 +391,24 @@ function heldInBudget(pot: Pot, accounts: Account[]): boolean {
   return a ? a.inBudget : true;
 }
 
+/**
+ * Due occurrences from before this period that are overdue and still unpaid. History isn't
+ * rewritten — only current/future periods carry the debt forward, per `assessPeriod`'s caller.
+ * A payment can land anywhere between the old due date and now (long after the usual ± tolerance
+ * window), so this looks at every transaction assigned to the item over that whole span.
+ */
+function carriedOccurrences(item: Item, data: EngineData, period: Period, moves: OccurrenceMove[]): ISODate[] {
+  const floor = maxDate(item.startDate ?? item.createdAt.slice(0, 10), addDays(period.start, -CARRY_LOOKBACK_DAYS));
+  if (floor >= period.start) return [];
+  const to = addDays(period.start, -1);
+  const raw = occurrences(item, data.pay, floor, to);
+  const candidates = applyMoves(raw, moves, floor, to).filter((d) => addDays(d, tolerance(item)) < data.today);
+  if (candidates.length === 0) return [];
+  const txns = data.txnsForItem(item.id, floor, period.end).filter((t) => t.kind === 'normal');
+  const matched = new Set(txns.map((t) => effectiveDate(t, item, data.pay, moves)));
+  return candidates.filter((d) => !matched.has(d));
+}
+
 // ---------------------------------------------------------------------------
 // Period assessment
 // ---------------------------------------------------------------------------
@@ -419,7 +451,7 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
   const effective = new Map<string, ISODate>();
   for (const t of window) {
     const item = t.itemId != null ? itemsById.get(t.itemId) : undefined;
-    effective.set(t.id, effectiveDate(t, item, pay));
+    effective.set(t.id, effectiveDate(t, item, pay, item ? data.movesForItem(item.id) : []));
   }
 
   const byItem = new Map<number, Txn[]>();
@@ -446,12 +478,21 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
     const alloc = effectiveAllocation(item);
 
     if (alloc === 'due') {
-      const occ = occurrences(item, pay, period.start, period.end);
+      const moves = data.movesForItem(item.id);
+      // A moved-away date keeps its place in its natural period — shown deferred, not vanished —
+      // unless it's the moved-in date landing here from elsewhere, or gets paid anyway.
+      const movedAway = new Map(moves.map((m) => [m.fromDate, m.toDate]));
+      const naturalOcc = occurrences(item, pay, period.start, period.end);
+      const movedIn = moves.filter((m) => m.toDate >= period.start && m.toDate <= period.end).map((m) => m.toDate);
+      const occ = [...new Set([...naturalOcc, ...movedIn])].sort();
       const occSet = new Set(occ);
+      const movedFromByDate = new Map(moves.filter((m) => occSet.has(m.toDate)).map((m) => [m.toDate, m.fromDate]));
       for (const date of occ) {
         const matched = txns.filter((t) => effective.get(t.id) === date);
         const signed = sum(matched.map((t) => t.amountCents));
         const overdue = addDays(date, tolerance(item)) < today;
+        // Paying it clears a deferral too — the obligation is resolved regardless of where it sits.
+        const deferredTo = matched.length === 0 ? (movedAway.get(date) ?? null) : null;
         if (item.kind === 'income') {
           const received = matched.length > 0;
           income.push({
@@ -462,6 +503,23 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
             countedCents: received ? signed : overdue ? 0 : item.amountCents,
             status: received ? 'received' : overdue ? 'late' : 'expected',
             txnIds: matched.map((t) => t.id),
+          });
+        } else if (deferredTo) {
+          expenses.push({
+            ...lineBase(item, `${item.id}:${date}`),
+            allocation: 'due',
+            date,
+            budgetCents: item.amountCents,
+            actualCents: 0,
+            committedCents: 0,
+            remainingCents: 0,
+            status: 'deferred',
+            txnIds: [],
+            fundBalanceCents: null,
+            reserveKey: null,
+            carriedOver: false,
+            movedFrom: null,
+            movedTo: deferredTo,
           });
         } else {
           const paid = matched.length > 0;
@@ -477,6 +535,31 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
             txnIds: matched.map((t) => t.id),
             fundBalanceCents: null,
             reserveKey: null,
+            carriedOver: false,
+            movedFrom: movedFromByDate.get(date) ?? null,
+            movedTo: null,
+          });
+        }
+      }
+      // Expenses only: a still-unpaid obligation from an earlier period doesn't just vanish —
+      // it stays committed, in every period from here on, until it's paid.
+      if (item.kind === 'expense' && period.status !== 'past') {
+        for (const date of carriedOccurrences(item, data, period, moves)) {
+          expenses.push({
+            ...lineBase(item, `${item.id}:${date}`),
+            allocation: 'due',
+            date,
+            budgetCents: item.amountCents,
+            actualCents: 0,
+            committedCents: item.amountCents,
+            remainingCents: item.amountCents,
+            status: 'overdue',
+            txnIds: [],
+            fundBalanceCents: null,
+            reserveKey: null,
+            carriedOver: true,
+            movedFrom: null,
+            movedTo: null,
           });
         }
       }
@@ -510,6 +593,9 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
             txnIds: extra.map((t) => t.id),
             fundBalanceCents: null,
             reserveKey: null,
+            carriedOver: false,
+            movedFrom: null,
+            movedTo: null,
           });
         }
       }
@@ -537,6 +623,9 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
         txnIds: inPeriod.map((t) => t.id),
         fundBalanceCents: null,
         reserveKey: null,
+        carriedOver: false,
+        movedFrom: null,
+        movedTo: null,
       });
       continue;
     }
@@ -558,6 +647,9 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
       txnIds: inPeriod.map((t) => t.id),
       fundBalanceCents: Math.round(balanceAt(link.sim, link.pot, period.end)),
       reserveKey: link.pot.key,
+      carriedOver: false,
+      movedFrom: null,
+      movedTo: null,
     });
   }
 
@@ -710,12 +802,18 @@ function plannedFrom(a: Assessment, kindOf: (itemId: number) => 'income' | 'expe
   return out;
 }
 
+/** A carried-over obligation can legitimately appear in more than one period's assessment. */
+function dedupeByKey(entries: PlannedEntry[]): PlannedEntry[] {
+  const seen = new Set<string>();
+  return entries.filter((e) => (seen.has(e.key) ? false : (seen.add(e.key), true)));
+}
+
 export function buildCalendar(data: EngineData, from: ISODate, to: ISODate): CalendarResponse {
   const kinds = new Map(data.items.map((i) => [i.id, i.kind]));
   const assessments = periodsOverlapping(data, from, to).map((p) => assessPeriod(data, p));
-  const planned = assessments
-    .flatMap((a) => plannedFrom(a, (id) => kinds.get(id) ?? 'expense'))
-    .filter((p) => p.date >= from && p.date <= to);
+  const planned = dedupeByKey(
+    assessments.flatMap((a) => plannedFrom(a, (id) => kinds.get(id) ?? 'expense')).filter((p) => p.date >= from && p.date <= to),
+  );
   const txns = data.txnsBetween(from, to);
 
   const days: CalendarDay[] = [];
@@ -742,10 +840,12 @@ export function buildLedger(data: EngineData, from: ISODate, to: ISODate): Ledge
   const hi = minDate(to, addDays(data.today, 800));
   const planned =
     lo <= hi
-      ? periodsOverlapping(data, lo, hi)
-          .map((p) => assessPeriod(data, p))
-          .flatMap((a) => plannedFrom(a, (id) => kinds.get(id) ?? 'expense'))
-          .filter((p) => p.date >= from && p.date <= to && open.has(p.status))
+      ? dedupeByKey(
+          periodsOverlapping(data, lo, hi)
+            .map((p) => assessPeriod(data, p))
+            .flatMap((a) => plannedFrom(a, (id) => kinds.get(id) ?? 'expense'))
+            .filter((p) => p.date >= from && p.date <= to && open.has(p.status)),
+        )
       : [];
   return {
     from,

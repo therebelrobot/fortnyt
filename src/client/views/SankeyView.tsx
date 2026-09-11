@@ -188,6 +188,26 @@ export function SankeyView({ params }: { params: URLSearchParams }) {
           <g>{nodeEls}</g>
         </svg>
       </div>
+      {f.deferred.length > 0 && (
+        <div className="section" style={{ opacity: 0.65 }}>
+          <p className="muted small" style={{ marginBottom: '0.5rem' }}>
+            Deferred to a later period — this money never moved through this period, so it isn’t part of the flow above.
+          </p>
+          <table className="lines">
+            <tbody>
+              {f.deferred.map((d) => (
+                <tr key={d.key}>
+                  <td>
+                    <span className="swatch" style={{ background: d.color }} /> {d.label}
+                  </td>
+                  <td className="r hide-sm">{d.movedTo ? `→ ${d.movedTo}` : ''}</td>
+                  <td className="r money">{money(d.cents)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       <details className="section">
         <summary>The same flows as a table</summary>
         <table className="lines">

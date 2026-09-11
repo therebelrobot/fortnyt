@@ -152,6 +152,17 @@ const MIGRATIONS: string[] = [
   );
   CREATE UNIQUE INDEX account_balances_account_date ON account_balances(account_id, date);
   `,
+  // 4 — manual reschedules of a due line's occurrences ("move to next pay period")
+  `
+  CREATE TABLE occurrence_moves (
+    id         INTEGER PRIMARY KEY,
+    item_id    INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    from_date  TEXT    NOT NULL,
+    to_date    TEXT    NOT NULL,
+    created_at TEXT    NOT NULL
+  );
+  CREATE UNIQUE INDEX occurrence_moves_item_from ON occurrence_moves(item_id, from_date);
+  `,
 ];
 
 export function openDatabase(dataDir: string): DatabaseSync {

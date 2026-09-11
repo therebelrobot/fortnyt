@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { diffDays, eachDay } from '../../shared/dates';
+import { periodByIndex } from '../../shared/recurrence';
 import type { Assessment, ExpenseLine, Txn } from '../../shared/types';
 import { api } from '../api';
 import { AssignSelect, ErrorNote, Loading, Money, StepNav, SunGlyph, Swatch, Tag } from '../components/ui';
@@ -258,7 +259,7 @@ function Expenses({ a }: { a: Assessment }) {
         <tbody>
           {groups.map(([label, lines]) =>
             lines.length === 0 ? null : (
-              <FragmentRows key={label} label={label} lines={lines} />
+              <FragmentRows key={label} label={label} lines={lines} a={a} />
             ),
           )}
           {a.unplanned.spendCents > 0 && (
@@ -281,7 +282,7 @@ function Expenses({ a }: { a: Assessment }) {
   );
 }
 
-function FragmentRows({ label, lines }: { label: string; lines: ExpenseLine[] }) {
+function FragmentRows({ label, lines, a }: { label: string; lines: ExpenseLine[]; a: Assessment }) {
   return (
     <>
       <tr className="subhead">
@@ -290,7 +291,7 @@ function FragmentRows({ label, lines }: { label: string; lines: ExpenseLine[] })
       {lines.map((l) => {
         const pct = l.budgetCents > 0 ? Math.min(100, (l.actualCents / l.budgetCents) * 100) : 0;
         return (
-          <tr key={l.key}>
+          <tr key={l.key} className={l.status === 'deferred' ? 'deferred' : ''}>
             <td>
               <div className="name">
                 <Swatch color={l.color} />
@@ -299,7 +300,11 @@ function FragmentRows({ label, lines }: { label: string; lines: ExpenseLine[] })
               <div className="desc-sub">
                 {l.date ? `${dateDay(l.date)} ` : ''}
                 <Tag status={l.status} />
+                {l.carriedOver && <> · from an earlier period, still unpaid</>}
+                {l.movedFrom && <> · moved from {dateDay(l.movedFrom)}</>}
+                {l.movedTo && <> · moved to {dateDay(l.movedTo)}, doesn’t count here anymore</>}
                 {l.fundBalanceCents != null && <> reserve holds {money(l.fundBalanceCents)}</>}
+                {l.allocation === 'due' && <MoveAction l={l} a={a} />}
               </div>
               {l.allocation === 'spread' && (
                 <div className={`meter ${l.actualCents > l.budgetCents ? 'over' : ''}`} title={`${Math.round(pct)}% used`}>
@@ -319,6 +324,60 @@ function FragmentRows({ label, lines }: { label: string; lines: ExpenseLine[] })
           </tr>
         );
       })}
+    </>
+  );
+}
+
+function MoveAction({ l, a }: { l: ExpenseLine; a: Assessment }) {
+  const { refresh, toast } = useApp();
+  const [busy, setBusy] = useState(false);
+  if (!l.date) return null;
+
+  async function move() {
+    setBusy(true);
+    try {
+      const nextPayday = periodByIndex(a.period.index + 1, a.lens.pay, a.today).start;
+      await api.moveOccurrence(l.itemId, l.date!, nextPayday);
+      refresh();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // A deferred line's own date *is* the move's fromDate; a moved-in line carries it separately.
+  const undoFrom = l.movedTo ? l.date : l.movedFrom;
+
+  async function undo() {
+    setBusy(true);
+    try {
+      await api.undoMove(l.itemId, undoFrom!);
+      refresh();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (undoFrom) {
+    return (
+      <>
+        {' · '}
+        <button type="button" className="btn ghost small" disabled={busy} onClick={() => void undo()}>
+          Undo move
+        </button>
+      </>
+    );
+  }
+  if (l.status !== 'upcoming' && l.status !== 'overdue') return null;
+  return (
+    <>
+      {' · '}
+      <button type="button" className="btn ghost small" disabled={busy} onClick={() => void move()}>
+        Move to next period →
+      </button>
     </>
   );
 }

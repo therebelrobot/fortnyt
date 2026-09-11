@@ -610,6 +610,15 @@ table.lines th.r {
   color: var(--verdigris);
 }
 
+.tag-deferred {
+  background: var(--sunk);
+  color: var(--ink-3);
+}
+
+table.lines tr.deferred {
+  opacity: 0.55;
+}
+
 .by-rule {
   font-size: 0.7rem;
   color: var(--ink-3);
@@ -753,6 +762,10 @@ table.lines th.r {
 .chip.late {
   border-color: var(--berry);
   color: var(--berry);
+}
+
+.chip.deferred {
+  opacity: 0.5;
 }
 
 .chip.txn.pending {

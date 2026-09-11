@@ -75,6 +75,7 @@ export function DialView({ params }: { params: URLSearchParams }) {
           key={l.key}
           d={sector(130, 186, lc, l1)}
           fill={l.color}
+          fillOpacity={l.deferred ? 0.4 : undefined}
           className={hot === l.key || hot === g.key ? 'hot' : ''}
           tabIndex={0}
           aria-label={`${l.label}: ${money(l.cents)}`}
@@ -104,6 +105,31 @@ export function DialView({ params }: { params: URLSearchParams }) {
       </path>,
     );
   }
+  // Deferred bills get their own outer ring, swept over their own total — kept separate from the
+  // main ring's angle math since that money never moved through this period at all.
+  if (flows.deferred.length > 0) {
+    let dc = 0;
+    for (const d of flows.deferred) {
+      const d0 = (dc / flows.deferredCents) * TAU;
+      dc += d.cents;
+      const d1 = (dc / flows.deferredCents) * TAU;
+      paths.push(
+        <path
+          key={`def:${d.key}`}
+          d={sector(190, 196, d0, d1)}
+          fill="var(--ink-3)"
+          fillOpacity={hot === `def:${d.key}` ? 0.7 : 0.4}
+          tabIndex={0}
+          aria-label={`${d.label}: deferred, ${money(d.cents)}`}
+          onMouseEnter={() => setHot(`def:${d.key}`)}
+          onFocus={() => setHot(`def:${d.key}`)}
+        >
+          <title>{`${d.label}: deferred${d.movedTo ? ` to ${d.movedTo}` : ''} — ${money(d.cents)}`}</title>
+        </path>,
+      );
+    }
+  }
+
   // When more goes out than comes in, mark where the income runs out.
   const incomeMark = leftover < 0 ? angle(income) : null;
 
@@ -134,6 +160,7 @@ export function DialView({ params }: { params: URLSearchParams }) {
         The whole ring is {mode === 'plan' ? 'the income the plan expects' : 'the money coming in'} this pay period
         {a.lens.personId != null ? ` (${a.lens.name}’s share)` : ''}. Inner ring: groups. Outer ring: budget lines. Gold:
         what isn’t spoken for.
+        {flows.deferred.length > 0 && ' Grey outer ring: bills deferred to a later period — not part of this ring’s money.'}
       </p>
 
       <div className="dial-wrap">
@@ -179,6 +206,26 @@ export function DialView({ params }: { params: URLSearchParams }) {
             <span className="money">{money(leftover)}</span>
             <span className="muted small">{leftover > 0 ? pct(leftover) : ''}</span>
           </li>
+          {flows.deferred.length > 0 && (
+            <li className="group" style={{ opacity: 0.55 }}>
+              <span className="name">
+                <span className="swatch" style={{ background: 'var(--ink-3)' }} />
+                <span>Deferred to a later period</span>
+              </span>
+              <span className="money">{money(flows.deferredCents)}</span>
+              <span className="muted small" />
+            </li>
+          )}
+          {flows.deferred.map((d) => (
+            <li key={d.key} className={hot === `def:${d.key}` ? 'hot' : ''} style={{ opacity: 0.55 }} onMouseEnter={() => setHot(`def:${d.key}`)}>
+              <span className="name" style={{ paddingLeft: '1.1rem' }}>
+                <span className="swatch" style={{ background: d.color }} />
+                <span>{d.label}</span>
+              </span>
+              <span className="money">{money(d.cents)}</span>
+              <span className="muted small">{d.movedTo ? `→ ${d.movedTo}` : ''}</span>
+            </li>
+          ))}
         </ul>
       </div>
     </>
@@ -207,7 +254,7 @@ function GroupRows({
         <span className="muted small">{pct(g.cents)}</span>
       </li>
       {g.lines.map((l) => (
-        <li key={l.key} className={hot === l.key ? 'hot' : ''} onMouseEnter={() => setHot(l.key)}>
+        <li key={l.key} className={hot === l.key ? 'hot' : ''} style={l.deferred ? { opacity: 0.55 } : undefined} onMouseEnter={() => setHot(l.key)}>
           <span className="name" style={{ paddingLeft: '1.1rem' }}>
             <span className="swatch" style={{ background: l.color }} />
             <span>{l.label}</span>

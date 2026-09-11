@@ -155,6 +155,10 @@ export const ruleSchema = z
     }
   });
 
+export const occurrenceMoveSchema = z
+  .object({ fromDate: isoDate, toDate: isoDate })
+  .refine((v) => v.toDate > v.fromDate, { message: 'Can only move an obligation forward', path: ['toDate'] });
+
 export const claimSchema = z.object({ token: z.string().trim().min(10).max(4000) });
 
 export const rangeSchema = z.object({ from: isoDate, to: isoDate }).refine((v) => v.from <= v.to, 'from must be ≤ to');

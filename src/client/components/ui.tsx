@@ -21,6 +21,7 @@ const STATUS_TEXT: Record<string, string> = {
   funding: 'Saving',
   pending: 'Pending',
   planned: 'Planned',
+  deferred: 'Deferred',
 };
 
 export function Tag({ status }: { status: string }) {

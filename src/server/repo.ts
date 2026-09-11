@@ -6,6 +6,7 @@ import type {
   ISODate,
   Item,
   ItemInput,
+  OccurrenceMove,
   Person,
   PersonInput,
   Reserve,
@@ -73,6 +74,16 @@ function toAccount(r: Row): Account {
 
 function toAccountBalanceEntry(r: Row): AccountBalanceEntry {
   return { id: Number(r.id), date: String(r.date), balanceCents: Number(r.balance_cents) };
+}
+
+function toOccurrenceMove(r: Row): OccurrenceMove {
+  return {
+    id: Number(r.id),
+    itemId: Number(r.item_id),
+    fromDate: String(r.from_date),
+    toDate: String(r.to_date),
+    createdAt: String(r.created_at),
+  };
 }
 
 function toTxn(r: Row): Txn {
@@ -293,6 +304,35 @@ export class Repo {
       this.db.prepare(`UPDATE transactions SET assigned_by = NULL, rule_id = NULL WHERE item_id = ?`).run(id);
       return Number(this.db.prepare('DELETE FROM items WHERE id = ?').run(id).changes) > 0;
     });
+  }
+
+  // --- occurrence moves ------------------------------------------------------
+
+  allMoves(): OccurrenceMove[] {
+    return (this.db.prepare('SELECT * FROM occurrence_moves').all() as Row[]).map(toOccurrenceMove);
+  }
+
+  movesForItem(itemId: number): OccurrenceMove[] {
+    return (
+      this.db.prepare('SELECT * FROM occurrence_moves WHERE item_id = ?').all(itemId) as Row[]
+    ).map(toOccurrenceMove);
+  }
+
+  /** Re-moving the same occurrence just replaces its target; that's the natural way to change your mind. */
+  moveOccurrence(itemId: number, fromDate: ISODate, toDate: ISODate): OccurrenceMove {
+    this.db
+      .prepare(
+        `INSERT INTO occurrence_moves (item_id, from_date, to_date, created_at) VALUES ($item, $from, $to, $created)
+         ON CONFLICT(item_id, from_date) DO UPDATE SET to_date = excluded.to_date, created_at = excluded.created_at`,
+      )
+      .run({ $item: itemId, $from: fromDate, $to: toDate, $created: nowIso() });
+    return this.movesForItem(itemId).find((m) => m.fromDate === fromDate)!;
+  }
+
+  deleteMove(itemId: number, fromDate: ISODate): boolean {
+    return (
+      Number(this.db.prepare('DELETE FROM occurrence_moves WHERE item_id = ? AND from_date = ?').run(itemId, fromDate).changes) > 0
+    );
   }
 
   // --- accounts ------------------------------------------------------------

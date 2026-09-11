@@ -144,6 +144,15 @@ export interface Rule {
 
 export type RuleInput = Omit<Rule, 'id'>;
 
+/** A manual reschedule of one due-line occurrence — pushes its obligation to a different date. */
+export interface OccurrenceMove {
+  id: number;
+  itemId: number;
+  fromDate: ISODate;
+  toDate: ISODate;
+  createdAt: string;
+}
+
 export interface Period {
   index: number;
   start: ISODate;
@@ -160,7 +169,8 @@ export type ExpenseStatus =
   | 'extra'
   | 'open'
   | 'closed'
-  | 'funding';
+  | 'funding'
+  | 'deferred';
 
 export interface IncomeLine {
   key: string;
@@ -197,6 +207,12 @@ export interface ExpenseLine {
   fundBalanceCents: number | null;
   /** reserve lines: which reserve (see Assessment.reserves) */
   reserveKey: string | null;
+  /** due lines: this occurrence was due before this period and is still unpaid — it stays committed until paid. */
+  carriedOver: boolean;
+  /** due lines: this occurrence was manually moved here from an earlier natural date. */
+  movedFrom: ISODate | null;
+  /** due lines: this occurrence's natural date was here, but its obligation was moved out to a later date. */
+  movedTo: ISODate | null;
 }
 
 export interface CashCheck {

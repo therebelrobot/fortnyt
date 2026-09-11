@@ -106,6 +106,24 @@ export function occurrences(
   return rawOccurrences(spec, pay, lo, hi);
 }
 
+/**
+ * Applies manual occurrence reschedules on top of a natural occurrence list: a moved-away date
+ * drops out, and a moved-in date appears if its target falls in [from, to] — regardless of
+ * whether the natural series would ever land there. Only meaningful for `due` lines.
+ */
+export function applyMoves(
+  dates: ISODate[],
+  moves: { fromDate: ISODate; toDate: ISODate }[],
+  from: ISODate,
+  to: ISODate,
+): ISODate[] {
+  if (moves.length === 0) return dates;
+  const out = new Set(dates);
+  for (const m of moves) out.delete(m.fromDate);
+  for (const m of moves) if (m.toDate >= from && m.toDate <= to) out.add(m.toDate);
+  return [...out].sort();
+}
+
 function stepped(anchor: ISODate | null, step: number, from: ISODate, to: ISODate): ISODate[] {
   if (!anchor) return [];
   const out: ISODate[] = [];
