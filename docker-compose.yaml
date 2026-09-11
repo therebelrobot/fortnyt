@@ -1,0 +1,13 @@
+# docker compose up -d
+# The container runs as uid 1000 (the image's `node` user): the ./data folder must be writable by it.
+#   mkdir -p data && sudo chown 1000:1000 data
+services:
+  fortnyt:
+    image: ghcr.io/therebelrobot/fortnyt:latest
+    container_name: fortnyt
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - ./data:/app/data

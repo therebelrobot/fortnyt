@@ -1,0 +1,48 @@
+{
+  "name": "fortnyt",
+  "version": "0.1.0",
+  "description": "Self-hosted pay-period budget + SimpleFIN transaction assessor. Paid every two weeks, billed every month — handled.",
+  "license": "Unlicense",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "tsx watch --clear-screen=false src/server/index.ts",
+    "dev:client": "vite",
+    "build": "vite build && node scripts/build-server.mjs",
+    "start": "node --disable-warning=ExperimentalWarning dist/server.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts",
+    "demo:seed": "tsx scripts/seed-demo.ts",
+    "docker:build": "docker build -t ghcr.io/therebelrobot/fortnyt:dev .",
+    "docker:run": "docker run --rm -it -p 8080:8080 --env-file .env -v \"$PWD/data:/app/data\" ghcr.io/therebelrobot/fortnyt:dev",
+    "docker:push": "docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/therebelrobot/fortnyt:latest --push .",
+    "release:patch": "npm version patch -m 'release: %s'",
+    "release:minor": "npm version minor -m 'release: %s'",
+    "release:major": "npm version major -m 'release: %s'",
+    "release:tags": "git push --follow-tags"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "dotenv": "^17.4.2",
+    "hono": "^4.13.7",
+    "zod": "^4.6.2"
+  },
+  "devDependencies": {
+    "@fontsource-variable/atkinson-hyperlegible-next": "^5.3.0",
+    "@fontsource-variable/fraunces": "^5.3.0",
+    "@types/node": "^24.13.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "esbuild": "^0.28.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.0"
+  }
+}

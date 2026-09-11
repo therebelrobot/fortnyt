@@ -1,0 +1,31 @@
+# Pushing a v* tag (npm run release:patch && npm run release:tags) builds linux/amd64 + linux/arm64,
+# pushes to ghcr.io/therebelrobot/fortnyt, and attaches signed build provenance — all done by the
+# shared reusable workflow.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    needs: test
+    # TODO: pin to a full commit SHA of therebelrobot/.github (tags and branches are mutable).
+    uses: therebelrobot/.github/.github/workflows/docker-build.yml@main
+    with:
+      image-name: fortnyt
+      dockerfile: ./Dockerfile
+      context: .
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write

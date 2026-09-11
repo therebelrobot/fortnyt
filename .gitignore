@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+data-*/
+*.db
+*.db-*
+.env
+.playwright-cli/
+.DS_Store
