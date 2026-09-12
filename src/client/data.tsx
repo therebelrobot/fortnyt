@@ -12,6 +12,8 @@ interface Ctx {
   version: number;
   refresh: () => void;
   status: Status | null;
+  /** set when the initial status fetch fails — the app can't render without it */
+  loadError: Error | null;
   items: Item[];
   reserves: ReserveDetail[];
   accounts: Account[];
@@ -28,6 +30,7 @@ const DataCtx = createContext<Ctx>({
   version: 0,
   refresh: () => {},
   status: null,
+  loadError: null,
   items: [],
   reserves: [],
   accounts: [],
@@ -43,6 +46,7 @@ const LENS_KEY = 'fortnyt.person';
 export function DataProvider({ children }: { children: ReactNode }) {
   const [version, setVersion] = useState(0);
   const [status, setStatus] = useState<Status | null>(null);
+  const [loadError, setLoadError] = useState<Error | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [reserves, setReserves] = useState<ReserveDetail[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -67,16 +71,25 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let live = true;
-    Promise.all([api.status(), api.items(), api.reserves(null), api.accounts()])
-      .then(([s, i, r, a]) => {
+    Promise.allSettled([api.status(), api.items(), api.reserves(null), api.accounts()]).then(
+      ([s, i, r, a]) => {
         if (!live) return;
-        setCurrency(s.settings.currency);
-        setStatus(s);
-        setItems(i);
-        setReserves(r.filter((x) => !x.virtual));
-        setAccounts(a);
-      })
-      .catch(() => {});
+        if (s.status === 'fulfilled') {
+          setCurrency(s.value.settings.currency);
+          setStatus(s.value);
+          setLoadError(null);
+        } else {
+          // Without status the app can't render anything — surface it instead of
+          // hanging on "Loading…" forever.
+          setLoadError(s.reason instanceof Error ? s.reason : new Error(String(s.reason)));
+        }
+        setItems(i.status === 'fulfilled' ? i.value : []);
+        // A 409 here means "no pay schedule yet" — on a fresh install there are no
+        // reserves to show, so an empty list is the right answer, not a fatal error.
+        setReserves(r.status === 'fulfilled' ? r.value.filter((x) => !x.virtual) : []);
+        setAccounts(a.status === 'fulfilled' ? a.value : []);
+      },
+    );
     return () => {
       live = false;
     };
@@ -98,6 +111,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         version,
         refresh,
         status,
+        loadError,
         items,
         reserves,
         accounts,

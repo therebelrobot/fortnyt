@@ -23,11 +23,19 @@ const NAV = [
 
 export function App() {
   const route = useRoute();
-  const { status, people, personId, setPersonId } = useApp();
+  const { status, loadError, people, personId, setPersonId } = useApp();
 
   let body;
-  if (!status) body = <Loading />;
-  else if (!status.settings.payAnchor && route.view !== 'setup') body = <BudgetView firstRun />;
+  if (!status) {
+    body = loadError ? (
+      <div className="error-note" role="alert">
+        <p>Couldn’t load fortnyt: {loadError.message}</p>
+        <p className="small muted">Check that the server is running, then reload the page.</p>
+      </div>
+    ) : (
+      <Loading />
+    );
+  } else if (!status.settings.payAnchor && route.view !== 'setup') body = <BudgetView firstRun />;
   else {
     switch (route.view) {
       case 'calendar':
