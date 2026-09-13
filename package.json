@@ -1,6 +1,6 @@
 {
   "name": "fortnyt",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Self-hosted pay-period budget + SimpleFIN transaction assessor. Paid every two weeks, billed every month — handled.",
   "license": "Unlicense",
   "private": true,
