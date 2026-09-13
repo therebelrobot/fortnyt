@@ -3,11 +3,57 @@ import { addDays } from '../../shared/dates';
 import { needsAnchorDate, paydaysBetween, timesPerYear } from '../../shared/recurrence';
 import type { Allocation, Item, ItemInput } from '../../shared/types';
 import { api } from '../api';
-import { CadenceFields, Dialog, ErrorNote, Money, Swatch } from '../components/ui';
+import { CadenceFields, Dialog, ErrorNote, Money, Segmented, Swatch } from '../components/ui';
 import { useApp } from '../data';
-import { ALLOCATION_LABEL, cadenceSummary, centsToInput, dateDay, money, parseMoneyInput } from '../format';
+import { ALLOCATION_LABEL, CADENCE_LABEL, cadenceSummary, centsToInput, dateDay, money, parseMoneyInput } from '../format';
 import { personName } from '../periods';
 import { navigate, useRoute } from '../router';
+
+type Arrange = 'default' | 'name' | 'amount' | 'category' | 'interval';
+
+const ARRANGE_OPTIONS: { value: Arrange; label: string }[] = [
+  { value: 'default', label: 'As added' },
+  { value: 'name', label: 'A–Z' },
+  { value: 'amount', label: 'Cost' },
+  { value: 'category', label: 'Category' },
+  { value: 'interval', label: 'Interval' },
+];
+
+function cadenceGroupLabel(i: Item): string {
+  if (i.cadence === 'monthly' && i.intervalMonths !== 1) {
+    if (i.intervalMonths === 3) return 'Quarterly';
+    if (i.intervalMonths === 12) return 'Yearly';
+    return `Every ${i.intervalMonths} months`;
+  }
+  return CADENCE_LABEL[i.cadence];
+}
+
+function arrangeItems(list: Item[], mode: Arrange, payInterval: number): { key: string; items: Item[] }[] {
+  if (mode === 'default') return [{ key: '', items: list }];
+  if (mode === 'name') return [{ key: '', items: [...list].sort((a, b) => a.name.localeCompare(b.name)) }];
+  if (mode === 'amount') return [{ key: '', items: [...list].sort((a, b) => b.amountCents - a.amountCents) }];
+
+  const keyFn = mode === 'interval' ? cadenceGroupLabel : (i: Item) => i.group || 'Other';
+  const byName = [...list].sort((a, b) => a.name.localeCompare(b.name));
+  const groups = new Map<string, Item[]>();
+  for (const i of byName) {
+    const k = keyFn(i);
+    groups.set(k, [...(groups.get(k) ?? []), i]);
+  }
+  const keys = [...groups.keys()].sort((a, b) => {
+    if (mode === 'interval') {
+      const freq = (k: string) => {
+        const sample = groups.get(k)![0];
+        return timesPerYear(sample.cadence, sample.intervalMonths, payInterval);
+      };
+      return freq(b) - freq(a);
+    }
+    if (a === 'Other') return 1;
+    if (b === 'Other') return -1;
+    return a.localeCompare(b);
+  });
+  return keys.map((key) => ({ key, items: groups.get(key)! }));
+}
 
 export function BudgetView({ firstRun }: { firstRun?: boolean }) {
   const { items, status, people, reserves } = useApp();
@@ -25,8 +71,13 @@ export function BudgetView({ firstRun }: { firstRun?: boolean }) {
 
   const income = items.filter((i) => i.kind === 'income');
   const expenses = items.filter((i) => i.kind === 'expense');
-  const groups = new Map<string, Item[]>();
-  for (const i of expenses) groups.set(i.group || 'Other', [...(groups.get(i.group || 'Other') ?? []), i]);
+  const inArrange = (route.params.get('inSort') as Arrange | null) ?? 'default';
+  const outArrange = (route.params.get('outSort') as Arrange | null) ?? 'category';
+  const setArrange = (next: { inSort?: Arrange; outSort?: Arrange }) => {
+    const nextIn = next.inSort ?? inArrange;
+    const nextOut = next.outSort ?? outArrange;
+    navigate('budget', { inSort: nextIn === 'default' ? undefined : nextIn, outSort: nextOut === 'category' ? undefined : nextOut }, true);
+  };
   const perPeriod = (i: Item) => Math.round((i.amountCents * timesPerYear(i.cadence, i.intervalMonths, interval)) / (365.25 / interval));
   const sumPer = (list: Item[]) => list.reduce((s, i) => s + perPeriod(i), 0);
   const reserveName = new Map(reserves.map((r) => [r.id, r.name]));
@@ -74,19 +125,37 @@ export function BudgetView({ firstRun }: { firstRun?: boolean }) {
             {income.length === 0 ? (
               <p className="empty">Add each paycheck as its own line. Use “Every payday” for the one that sets the schedule.</p>
             ) : (
-              <table className="lines">
-                <thead>
-                  <tr>
-                    <th>Line</th>
-                    <th className="hide-sm" />
-                    <th className="r">Amount</th>
-                    <th className="r hide-sm" title="Average per pay period over a year">
-                      ≈ per period
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>{rows(income)}</tbody>
-              </table>
+              <>
+                {income.length > 1 && (
+                  <div className="toolbar" style={{ marginBottom: '0.5rem' }}>
+                    <Segmented<Arrange> label="Arrange" value={inArrange} onChange={(v) => setArrange({ inSort: v })} options={ARRANGE_OPTIONS} />
+                  </div>
+                )}
+                <table className="lines">
+                  <thead>
+                    <tr>
+                      <th>Line</th>
+                      <th className="hide-sm" />
+                      <th className="r">Amount</th>
+                      <th className="r hide-sm" title="Average per pay period over a year">
+                        ≈ per period
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const arranged = arrangeItems(income, inArrange, interval);
+                      return arranged.length === 1 && arranged[0].key === ''
+                        ? rows(arranged[0].items)
+                        : arranged.map(({ key, items: list }) => (
+                            <GroupBlock key={key} label={key} total={sumPer(list)}>
+                              {rows(list)}
+                            </GroupBlock>
+                          ));
+                    })()}
+                  </tbody>
+                </table>
+              </>
             )}
           </section>
 
@@ -100,23 +169,35 @@ export function BudgetView({ firstRun }: { firstRun?: boolean }) {
             {expenses.length === 0 ? (
               <p className="empty">Start with rent, the regular bills, and an envelope for groceries.</p>
             ) : (
-              <table className="lines">
-                <thead>
-                  <tr>
-                    <th>Line</th>
-                    <th className="hide-sm" />
-                    <th className="r">Amount</th>
-                    <th className="r hide-sm">≈ per period</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...groups.entries()].map(([g, list]) => (
-                    <GroupBlock key={g} label={g} total={sumPer(list)}>
-                      {rows(list)}
-                    </GroupBlock>
-                  ))}
-                </tbody>
-              </table>
+              <>
+                {expenses.length > 1 && (
+                  <div className="toolbar" style={{ marginBottom: '0.5rem' }}>
+                    <Segmented<Arrange> label="Arrange" value={outArrange} onChange={(v) => setArrange({ outSort: v })} options={ARRANGE_OPTIONS} />
+                  </div>
+                )}
+                <table className="lines">
+                  <thead>
+                    <tr>
+                      <th>Line</th>
+                      <th className="hide-sm" />
+                      <th className="r">Amount</th>
+                      <th className="r hide-sm">≈ per period</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const arranged = arrangeItems(expenses, outArrange, interval);
+                      return arranged.length === 1 && arranged[0].key === ''
+                        ? rows(arranged[0].items)
+                        : arranged.map(({ key, items: list }) => (
+                            <GroupBlock key={key} label={key} total={sumPer(list)}>
+                              {rows(list)}
+                            </GroupBlock>
+                          ));
+                    })()}
+                  </tbody>
+                </table>
+              </>
             )}
             {items.length > 0 && (
               <p className="totals-line">
