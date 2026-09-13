@@ -11,6 +11,53 @@ It combines your planned budget with real bank transactions from [SimpleFIN Brid
 
 ---
 
+## Screenshots
+
+Same pay period (a two-person household, Rowan and Leif), shown eight different ways. A full set including the mobile layout is in [docs/screenshots/](docs/screenshots/) — regenerate anytime with `npm run screenshots` against a running dev server.
+
+<table>
+<tr>
+<td align="center"><b>This period</b><br>the headline number</td>
+<td align="center"><b>Calendar</b><br>week / pay period / month</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/period.png" width="420"></td>
+<td><img src="docs/screenshots/calendar.png" width="420"></td>
+</tr>
+<tr>
+<td align="center"><b>Dial</b><br>ring chart of the period</td>
+<td align="center"><b>Sankey</b><br>where the money flows</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/dial.png" width="420"></td>
+<td><img src="docs/screenshots/sankey.png" width="420"></td>
+</tr>
+<tr>
+<td align="center"><b>Ledger</b><br>transactions, assigned by rule</td>
+<td align="center"><b>Reserves</b><br>named pots with running balances</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/ledger.png" width="420"></td>
+<td><img src="docs/screenshots/reserves.png" width="420"></td>
+</tr>
+<tr>
+<td align="center"><b>Budget</b><br>pay schedule and every line</td>
+<td align="center"><b>Setup</b><br>bank connection, accounts, people, rules</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/budget.png" width="420"></td>
+<td><img src="docs/screenshots/setup.png" width="420"></td>
+</tr>
+</table>
+
+<img src="docs/screenshots/period-mobile.png" width="160" align="right">
+
+The rail collapses to a bottom tab bar under 860px, so the same views work on a phone.
+
+<br clear="right">
+
+---
+
 ## Quick start
 
 ### Try it with demo data (no bank needed)
@@ -37,6 +84,7 @@ It combines your planned budget with real bank transactions from [SimpleFIN Brid
 | `npm run typecheck` | `tsc --noEmit` over server, client, tests, scripts |
 | `npm run build` | `dist/public` (client) and `dist/server.mjs` (one bundled file) |
 | `npm start` | runs the built server |
+| `npm run screenshots` | regenerates `docs/screenshots/` (and the README's Screenshots section) against a running dev server |
 | `npm run docker:build` / `docker:run` / `docker:push` | local image, run it, multi-arch push |
 | `npm run release:patch` then `npm run release:tags` | bump, tag `vX.Y.Z`, push; CI builds and publishes the image with signed provenance |
 
