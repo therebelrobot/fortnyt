@@ -1,9 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { addDays } from '../../shared/dates';
-import { paydaysBetween, timesPerYear } from '../../shared/recurrence';
-import type { Allocation, Cadence, Item, ItemInput } from '../../shared/types';
+import { needsAnchorDate, paydaysBetween, timesPerYear } from '../../shared/recurrence';
+import type { Allocation, Item, ItemInput } from '../../shared/types';
 import { api } from '../api';
-import { Dialog, ErrorNote, Money, Swatch } from '../components/ui';
+import { CadenceFields, Dialog, ErrorNote, Money, Swatch } from '../components/ui';
 import { useApp } from '../data';
 import { ALLOCATION_LABEL, cadenceSummary, centsToInput, dateDay, money, parseMoneyInput } from '../format';
 import { personName } from '../periods';
@@ -291,7 +291,7 @@ function ItemDialog({ editing, onClose }: { editing: Item | 'new-income' | 'new-
 
   const set = <K extends keyof ItemInput>(k: K, v: ItemInput[K]) => setF((x) => ({ ...x, [k]: v }));
   const groups = [...new Set(items.map((i) => i.group).filter(Boolean))];
-  const needsDate = ['weekly', 'biweekly', 'yearly', 'once'].includes(f.cadence);
+  const needsDate = needsAnchorDate(f.cadence);
 
   async function save() {
     setError(null);
@@ -352,55 +352,7 @@ function ItemDialog({ editing, onClose }: { editing: Item | 'new-income' | 'new-
         </div>
 
         <div className="row">
-          <label>
-            How often
-            <select value={f.cadence} onChange={(e) => set('cadence', e.target.value as Cadence)}>
-              <option value="paycheck">Every payday</option>
-              <option value="weekly">Weekly</option>
-              <option value="biweekly">Every two weeks (own schedule)</option>
-              <option value="semimonthly">Twice a month</option>
-              <option value="monthly">Monthly, or every few months</option>
-              <option value="yearly">Yearly</option>
-              <option value="once">Once</option>
-            </select>
-          </label>
-          {(f.cadence === 'monthly' || f.cadence === 'semimonthly') && (
-            <label>
-              {f.cadence === 'semimonthly' ? 'First day' : 'Day of the month'}
-              <input
-                type="number"
-                min={1}
-                max={31}
-                value={f.dayOfMonth ?? 1}
-                onChange={(e) => set('dayOfMonth', Number(e.target.value))}
-                title="31 means the last day of every month"
-              />
-            </label>
-          )}
-          {f.cadence === 'semimonthly' && (
-            <label>
-              Second day
-              <input type="number" min={1} max={31} value={f.dayOfMonth2 ?? 15} onChange={(e) => set('dayOfMonth2', Number(e.target.value))} />
-            </label>
-          )}
-          {f.cadence === 'monthly' && (
-            <label>
-              Every
-              <select value={f.intervalMonths} onChange={(e) => set('intervalMonths', Number(e.target.value))}>
-                <option value={1}>month</option>
-                <option value={2}>2 months</option>
-                <option value={3}>3 months</option>
-                <option value={6}>6 months</option>
-                <option value={12}>12 months</option>
-              </select>
-            </label>
-          )}
-          {(needsDate || (f.cadence === 'monthly' && f.intervalMonths > 1)) && (
-            <label>
-              {f.cadence === 'once' ? 'Date' : 'A date it falls on'}
-              <input type="date" value={f.anchorDate ?? ''} onChange={(e) => set('anchorDate', e.target.value || null)} required />
-            </label>
-          )}
+          <CadenceFields f={f} set={set} />
         </div>
 
         {f.kind === 'expense' && (

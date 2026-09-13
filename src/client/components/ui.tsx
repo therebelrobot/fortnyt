@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { Item, Reserve, Txn } from '../../shared/types';
+import { needsAnchorDate } from '../../shared/recurrence';
+import type { Cadence, Item, Reserve, Txn } from '../../shared/types';
 import { api, ApiError } from '../api';
 import { useApp } from '../data';
 import { money } from '../format';
@@ -245,10 +246,81 @@ export function AssignSelect({ txn, onRule }: { txn: Txn; onRule?: (t: Txn) => v
       {txn.assignedBy === 'rule' && <span className="by-rule" title="Set by a rule">rule</span>}
       {onRule && (
         <button type="button" className="btn ghost small" onClick={() => onRule(txn)}>
-          Make a rule
+          {value === 'none' ? 'Add to budget + rule' : 'Make a rule'}
         </button>
       )}
     </div>
+  );
+}
+
+type CadenceFieldValues = { cadence: Cadence; dayOfMonth: number | null; dayOfMonth2: number | null; intervalMonths: number; anchorDate: string | null };
+
+/** How-often + day/interval/date fields for a budget line, shared by the budget-line editor and the quick "add to budget" form. */
+export function CadenceFields<T extends CadenceFieldValues>({ f, set }: { f: T; set: <K extends keyof T>(k: K, v: T[K]) => void }) {
+  const needsDate = needsAnchorDate(f.cadence);
+  return (
+    <>
+      <label>
+        How often
+        <select value={f.cadence} onChange={(e) => set('cadence', e.target.value as T['cadence'])}>
+          <option value="paycheck">Every payday</option>
+          <option value="weekly">Weekly</option>
+          <option value="biweekly">Every two weeks (own schedule)</option>
+          <option value="semimonthly">Twice a month</option>
+          <option value="monthly">Monthly, or every few months</option>
+          <option value="yearly">Yearly</option>
+          <option value="once">Once</option>
+        </select>
+      </label>
+      {(f.cadence === 'monthly' || f.cadence === 'semimonthly') && (
+        <label>
+          {f.cadence === 'semimonthly' ? 'First day' : 'Day of the month'}
+          <input
+            type="number"
+            min={1}
+            max={31}
+            value={f.dayOfMonth ?? 1}
+            onChange={(e) => set('dayOfMonth', Number(e.target.value) as T['dayOfMonth'])}
+            title="31 means the last day of every month"
+          />
+        </label>
+      )}
+      {f.cadence === 'semimonthly' && (
+        <label>
+          Second day
+          <input
+            type="number"
+            min={1}
+            max={31}
+            value={f.dayOfMonth2 ?? 15}
+            onChange={(e) => set('dayOfMonth2', Number(e.target.value) as T['dayOfMonth2'])}
+          />
+        </label>
+      )}
+      {f.cadence === 'monthly' && (
+        <label>
+          Every
+          <select value={f.intervalMonths} onChange={(e) => set('intervalMonths', Number(e.target.value) as T['intervalMonths'])}>
+            <option value={1}>month</option>
+            <option value={2}>2 months</option>
+            <option value={3}>3 months</option>
+            <option value={6}>6 months</option>
+            <option value={12}>12 months</option>
+          </select>
+        </label>
+      )}
+      {(needsDate || (f.cadence === 'monthly' && f.intervalMonths > 1)) && (
+        <label>
+          {f.cadence === 'once' ? 'Date' : 'A date it falls on'}
+          <input
+            type="date"
+            value={f.anchorDate ?? ''}
+            onChange={(e) => set('anchorDate', (e.target.value || null) as T['anchorDate'])}
+            required
+          />
+        </label>
+      )}
+    </>
   );
 }
 

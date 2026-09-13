@@ -11,6 +11,11 @@ import {
 } from './dates';
 import type { Cadence, ISODate, Item, Period } from './types';
 
+/** Cadences that fall on a single fixed calendar date rather than a day-of-month rule. */
+export function needsAnchorDate(cadence: Cadence): boolean {
+  return cadence === 'weekly' || cadence === 'biweekly' || cadence === 'yearly' || cadence === 'once';
+}
+
 export interface PaySchedule {
   /** any real payday; every period starts on a payday */
   anchor: ISODate;

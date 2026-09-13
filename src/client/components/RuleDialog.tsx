@@ -1,9 +1,31 @@
 import { useEffect, useState } from 'react';
-import type { Rule, RuleInput, Txn } from '../../shared/types';
+import type { ItemInput, Rule, RuleInput, Txn } from '../../shared/types';
 import { api } from '../api';
 import { useApp } from '../data';
-import { centsToInput, dateShort, parseMoneyInput } from '../format';
-import { Dialog, ErrorNote, ItemOptions, Money } from './ui';
+import { ALLOCATION_LABEL, centsToInput, dateShort, parseMoneyInput } from '../format';
+import { CadenceFields, Dialog, ErrorNote, ItemOptions, Money } from './ui';
+
+const blankNewItem = (kind: 'income' | 'expense'): ItemInput => ({
+  name: '',
+  kind,
+  group: '',
+  color: kind === 'income' ? '#4f8a4b' : '#2f6f73',
+  amountCents: 0,
+  cadence: kind === 'income' ? 'paycheck' : 'monthly',
+  anchorDate: null,
+  dayOfMonth: 1,
+  dayOfMonth2: 15,
+  intervalMonths: 1,
+  startDate: null,
+  endDate: null,
+  allocation: 'due',
+  toleranceDays: 5,
+  reserveOpeningCents: 0,
+  notes: '',
+  sort: 0,
+  ownerId: null,
+  reserveId: null,
+});
 
 /** Bank descriptions end in store numbers and dates; strip them so the rule matches next time. */
 export function suggestPattern(description: string): string {
@@ -51,10 +73,14 @@ export function RuleDialog({
   const [maxText, setMaxText] = useState('');
   const [error, setError] = useState<Error | null>(null);
   const [preview, setPreview] = useState<{ count: number; manualSkipped: number; sample: Txn[] } | null>(null);
+  const [newItem, setNewItem] = useState<ItemInput | null>(null);
+  const [newItemAmount, setNewItemAmount] = useState('');
 
   useEffect(() => {
     if (!open) return;
     setError(null);
+    setNewItem(null);
+    setNewItemAmount('');
     if (rule) {
       const { id: _id, ...rest } = rule;
       setR(rest);
@@ -74,9 +100,23 @@ export function RuleDialog({
     }
   }, [open, rule, fromTxn]);
 
+  const setNI = <K extends keyof ItemInput>(k: K, v: ItemInput[K]) => setNewItem((x) => (x ? { ...x, [k]: v } : x));
+
+  function addNewBudgetLine() {
+    const kind = fromTxn && fromTxn.amountCents > 0 ? 'income' : 'expense';
+    setR((x) => ({ ...x, setKind: 'normal', itemId: null, reserveId: null }));
+    setNewItem({
+      ...blankNewItem(kind),
+      name: (fromTxn ? suggestPattern(fromTxn.description) : '') || r.pattern,
+      anchorDate: fromTxn?.date ?? null,
+    });
+    setNewItemAmount(fromTxn ? centsToInput(Math.abs(fromTxn.amountCents)) : '');
+  }
+
   const candidate: RuleInput = { ...r, minCents: parseMoneyInput(minText), maxCents: parseMoneyInput(maxText) };
-  const target =
-    r.setKind !== 'normal'
+  const target = newItem
+    ? 'new'
+    : r.setKind !== 'normal'
       ? `kind:${r.setKind}`
       : r.itemId != null
         ? `item:${r.itemId}`
@@ -103,8 +143,20 @@ export function RuleDialog({
   async function save() {
     setError(null);
     try {
-      const res = rule ? await api.updateRule(rule.id, candidate) : await api.createRule(candidate);
-      toast(`Rule saved. ${res.changed} transaction${res.changed === 1 ? '' : 's'} updated.`);
+      let toApply = candidate;
+      if (newItem) {
+        if (!newItem.name.trim()) throw new Error('Name the new budget line.');
+        const cents = parseMoneyInput(newItemAmount);
+        if (cents == null) throw new Error('Enter an amount for the new budget line, for example 45.00.');
+        const item = await api.createItem({ ...newItem, amountCents: Math.abs(cents) });
+        toApply = { ...candidate, setKind: 'normal', itemId: item.id, reserveId: null };
+      }
+      const res = rule ? await api.updateRule(rule.id, toApply) : await api.createRule(toApply);
+      toast(
+        newItem
+          ? `${newItem.name} added to the budget. Rule saved, ${res.changed} transaction${res.changed === 1 ? '' : 's'} updated.`
+          : `Rule saved. ${res.changed} transaction${res.changed === 1 ? '' : 's'} updated.`,
+      );
       refresh();
       onClose();
     } catch (err) {
@@ -187,19 +239,80 @@ export function RuleDialog({
             value={target}
             onChange={(e) => {
               const v = e.target.value;
-              if (v.startsWith('kind:'))
+              if (v === 'new') addNewBudgetLine();
+              else if (v.startsWith('kind:'))
                 setR((x) => ({ ...x, setKind: v.slice(5) as RuleInput['setKind'], itemId: null, reserveId: null }));
               else if (v.startsWith('pot:')) setR((x) => ({ ...x, setKind: 'normal', itemId: null, reserveId: Number(v.slice(4)) }));
               else setR((x) => ({ ...x, setKind: 'normal', reserveId: null, itemId: v ? Number(v.slice(5)) : null }));
+              if (v !== 'new') setNewItem(null);
             }}
             required
           >
             <option value="" disabled>
               Choose a budget line
             </option>
+            <option value="new">+ New budget line…</option>
             <ItemOptions items={items} reserves={reserves} includeNone={false} />
           </select>
         </label>
+        {newItem && (
+          <fieldset className="subform">
+            <legend>New budget line</legend>
+            <div className="row">
+              <label className="grow">
+                Name
+                <input value={newItem.name} onChange={(e) => setNI('name', e.target.value)} required />
+              </label>
+              <label>
+                Amount
+                <input
+                  inputMode="decimal"
+                  value={newItemAmount}
+                  onChange={(e) => setNewItemAmount(e.target.value)}
+                  placeholder="0.00"
+                  required
+                />
+              </label>
+              <label>
+                Type
+                <select
+                  value={newItem.kind}
+                  onChange={(e) => {
+                    const kind = e.target.value as ItemInput['kind'];
+                    setNewItem((x) => (x ? { ...blankNewItem(kind), name: x.name, group: x.group } : x));
+                  }}
+                >
+                  <option value="expense">Expense</option>
+                  <option value="income">Income</option>
+                </select>
+              </label>
+            </div>
+            <div className="row">
+              <CadenceFields f={newItem} set={setNI} />
+            </div>
+            <div className="row">
+              <label className="grow">
+                Group (optional)
+                <input list="rule-new-item-groups" value={newItem.group} onChange={(e) => setNI('group', e.target.value)} placeholder="Home, Bills, Everyday…" />
+                <datalist id="rule-new-item-groups">
+                  {[...new Set(items.map((i) => i.group).filter(Boolean))].map((g) => (
+                    <option key={g} value={g} />
+                  ))}
+                </datalist>
+              </label>
+              {newItem.kind === 'expense' && (
+                <label>
+                  How it lands in pay periods
+                  <select value={newItem.allocation} onChange={(e) => setNI('allocation', e.target.value as ItemInput['allocation'])}>
+                    <option value="due">{ALLOCATION_LABEL.due}</option>
+                    <option value="spread">{ALLOCATION_LABEL.spread}</option>
+                    <option value="reserve">{ALLOCATION_LABEL.reserve}</option>
+                  </select>
+                </label>
+              )}
+            </div>
+          </fieldset>
+        )}
         <div className="row">
           <label className="grow">
             Name (optional)
