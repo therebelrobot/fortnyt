@@ -24,6 +24,7 @@ import type {
   Assessment,
   LensInfo,
   OccurrenceMove,
+  PeriodAdjustment,
   Person,
   Reserve,
   ReserveDetail,
@@ -56,6 +57,8 @@ export interface EngineData {
   txnsForReserve(reserveId: number, from: ISODate, to: ISODate): Txn[];
   /** Manual reschedules of this due line's occurrences. Irrelevant for spread/reserve lines. */
   movesForItem(itemId: number): OccurrenceMove[];
+  /** Temporary per-period budget overrides for a line. */
+  adjustmentsForItem(itemId: number): PeriodAdjustment[];
   /** set by applyLens; absent = whole household */
   lens?: LensInfo;
 }
@@ -476,6 +479,9 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
   for (const item of data.items) {
     const txns = byItem.get(item.id) ?? [];
     const alloc = effectiveAllocation(item);
+    // A temporary per-period adjustment, if any, for the period being assessed.
+    const adj = data.adjustmentsForItem(item.id).find((a) => a.periodStart === period.start);
+    const adjCents = adj?.amountCents;
 
     if (alloc === 'due') {
       const moves = data.movesForItem(item.id);
@@ -520,17 +526,20 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
             carriedOver: false,
             movedFrom: null,
             movedTo: deferredTo,
+            adjustedCents: null,
+            baseBudgetCents: null,
           });
         } else {
           const paid = matched.length > 0;
+          const budget = adjCents ?? item.amountCents;
           expenses.push({
             ...lineBase(item, `${item.id}:${date}`),
             allocation: 'due',
             date,
-            budgetCents: item.amountCents,
+            budgetCents: budget,
             actualCents: -signed,
-            committedCents: paid ? -signed : item.amountCents,
-            remainingCents: paid ? 0 : item.amountCents,
+            committedCents: paid ? -signed : budget,
+            remainingCents: paid ? 0 : budget,
             status: paid ? 'paid' : overdue ? 'overdue' : 'upcoming',
             txnIds: matched.map((t) => t.id),
             fundBalanceCents: null,
@@ -538,6 +547,8 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
             carriedOver: false,
             movedFrom: movedFromByDate.get(date) ?? null,
             movedTo: null,
+            adjustedCents: adjCents ?? null,
+            baseBudgetCents: item.amountCents,
           });
         }
       }
@@ -560,6 +571,8 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
             carriedOver: true,
             movedFrom: null,
             movedTo: null,
+            adjustedCents: null,
+            baseBudgetCents: null,
           });
         }
       }
@@ -596,6 +609,8 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
             carriedOver: false,
             movedFrom: null,
             movedTo: null,
+            adjustedCents: null,
+            baseBudgetCents: null,
           });
         }
       }
@@ -606,7 +621,8 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
     const actual = -sum(inPeriod.map((t) => t.amountCents));
 
     if (alloc === 'spread') {
-      const budget = Math.round(sum(dailyRates(item, pay, period.start, period.end, 'spread')));
+      const baseBudget = Math.round(sum(dailyRates(item, pay, period.start, period.end, 'spread')));
+      const budget = adjCents ?? baseBudget;
       if (budget === 0 && inPeriod.length === 0) continue;
       const closed = period.status === 'past';
       expenses.push({
@@ -626,6 +642,8 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
         carriedOver: false,
         movedFrom: null,
         movedTo: null,
+        adjustedCents: adjCents ?? null,
+        baseBudgetCents: baseBudget,
       });
       continue;
     }
@@ -650,6 +668,8 @@ export function assessPeriod(data: EngineData, period: Period): Assessment {
       carriedOver: false,
       movedFrom: null,
       movedTo: null,
+      adjustedCents: null,
+      baseBudgetCents: null,
     });
   }
 
@@ -841,11 +861,11 @@ export function buildLedger(data: EngineData, from: ISODate, to: ISODate): Ledge
   const planned =
     lo <= hi
       ? dedupeByKey(
-          periodsOverlapping(data, lo, hi)
-            .map((p) => assessPeriod(data, p))
-            .flatMap((a) => plannedFrom(a, (id) => kinds.get(id) ?? 'expense'))
-            .filter((p) => p.date >= from && p.date <= to && open.has(p.status)),
-        )
+        periodsOverlapping(data, lo, hi)
+          .map((p) => assessPeriod(data, p))
+          .flatMap((a) => plannedFrom(a, (id) => kinds.get(id) ?? 'expense'))
+          .filter((p) => p.date >= from && p.date <= to && open.has(p.status)),
+      )
       : [];
   return {
     from,
@@ -967,10 +987,10 @@ export function applyLens(data: EngineData, people: Person[], personId: number |
         return w === 1
           ? a
           : {
-              ...a,
-              balanceCents: a.balanceCents == null ? null : scale(a.balanceCents, w),
-              availableCents: a.availableCents == null ? null : scale(a.availableCents, w),
-            };
+            ...a,
+            balanceCents: a.balanceCents == null ? null : scale(a.balanceCents, w),
+            availableCents: a.availableCents == null ? null : scale(a.availableCents, w),
+          };
       }),
     txnsBetween: (f, t, o) => scaleTxns(data.txnsBetween(f, t, o)),
     txnsForItem: (id, f, t) => (itemW.get(id) ? scaleTxns(data.txnsForItem(id, f, t)) : []),

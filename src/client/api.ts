@@ -8,6 +8,7 @@ import type {
   ItemInput,
   LedgerResponse,
   OccurrenceMove,
+  PeriodAdjustment,
   Person,
   PersonInput,
   Reserve,
@@ -101,6 +102,12 @@ export const api = {
     req<OccurrenceMove>('POST', `/api/items/${itemId}/moves`, { fromDate, toDate }),
   undoMove: (itemId: number, fromDate: string) =>
     req<{ ok: true }>('DELETE', `/api/items/${itemId}/moves/${fromDate}`),
+
+  adjustments: (itemId: number) => req<PeriodAdjustment[]>('GET', `/api/items/${itemId}/adjustments`),
+  setAdjustment: (itemId: number, periodStart: string, amountCents: number) =>
+    req<PeriodAdjustment>('PUT', `/api/items/${itemId}/adjustments/${periodStart}`, { amountCents }),
+  removeAdjustment: (itemId: number, periodStart: string) =>
+    req<{ ok: true }>('DELETE', `/api/items/${itemId}/adjustments/${periodStart}`),
 
   accounts: () => req<Account[]>('GET', '/api/accounts'),
   createAccount: (a: AccountInput) => req<Account>('POST', '/api/accounts', a),

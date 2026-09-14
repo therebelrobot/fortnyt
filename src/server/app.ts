@@ -16,6 +16,7 @@ import {
   accountBalanceSchema,
   accountCreateSchema,
   accountPatchSchema,
+  adjustmentSchema,
   claimSchema,
   itemSchema,
   manualTxnSchema,
@@ -50,6 +51,13 @@ class HttpError extends Error {
 
 const MAX_RANGE_DAYS = 800;
 
+/** A date is a valid period start iff it falls on a payday of the schedule (past periods included). */
+function isPeriodStart(d: string, pay: { anchor: string; intervalDays: number }): boolean {
+  if (!isISODate(d)) return false;
+  const diff = diffDays(d, pay.anchor);
+  return diff % pay.intervalDays === 0;
+}
+
 export function createApp(deps: AppDeps) {
   const { repo, sync } = deps;
   const app = new Hono();
@@ -75,6 +83,7 @@ export function createApp(deps: AppDeps) {
       txnsForItem: (id, f, t) => repo.txnsForItem(id, f, t),
       txnsForReserve: (id, f, t) => repo.txnsForReserve(id, f, t),
       movesForItem: (id) => repo.movesForItem(id),
+      adjustmentsForItem: (id) => repo.adjustmentsForItem(id),
     };
     const person = c?.req.query('person');
     if (!person || !/^\d+$/.test(person)) return household;
@@ -211,6 +220,37 @@ export function createApp(deps: AppDeps) {
     if (!isISODate(fromDate)) throw new HttpError(400, 'Use a real date in YYYY-MM-DD form.');
     if (!repo.deleteMove(Number(c.req.param('id')), fromDate)) throw new HttpError(404, 'No such move.');
     return c.json({ ok: true });
+  });
+
+  // --- period adjustments ------------------------------------------------------
+
+  app.put('/api/items/:id/adjustments/:periodStart', async (c) => {
+    const itemId = Number(c.req.param('id'));
+    const item = repo.getItem(itemId);
+    if (!item) throw new HttpError(404, 'No such budget line.');
+    if (item.kind === 'income') throw new HttpError(400, 'Income lines can’t be adjusted for a period.');
+    if (item.allocation === 'reserve') throw new HttpError(400, 'Fund lines can’t be adjusted for a period.');
+    const s = repo.getSettings();
+    if (!s.payAnchor) throw new HttpError(409, 'Set your pay schedule first.');
+    const periodStart = c.req.param('periodStart');
+    if (!isPeriodStart(periodStart, { anchor: s.payAnchor, intervalDays: s.payIntervalDays })) {
+      throw new HttpError(400, 'That date isn’t a payday; pick the start of a pay period.');
+    }
+    const input = await body(c, adjustmentSchema);
+    return c.json(repo.upsertAdjustment(itemId, periodStart, input.amountCents));
+  });
+
+  app.delete('/api/items/:id/adjustments/:periodStart', (c) => {
+    const periodStart = c.req.param('periodStart');
+    if (!isISODate(periodStart)) throw new HttpError(400, 'Use a real date in YYYY-MM-DD form.');
+    if (!repo.deleteAdjustment(Number(c.req.param('id')), periodStart)) throw new HttpError(404, 'No such adjustment.');
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/items/:id/adjustments', (c) => {
+    const itemId = Number(c.req.param('id'));
+    if (!repo.getItem(itemId)) throw new HttpError(404, 'No such budget line.');
+    return c.json(repo.adjustmentsForItem(itemId));
   });
 
   // --- people ----------------------------------------------------------------

@@ -163,6 +163,18 @@ const MIGRATIONS: string[] = [
   );
   CREATE UNIQUE INDEX occurrence_moves_item_from ON occurrence_moves(item_id, from_date);
   `,
+  // 5 — temporary per-pay-period budget adjustments (one absolute amount per line per period)
+  `
+  CREATE TABLE period_adjustments (
+    id            INTEGER PRIMARY KEY,
+    item_id       INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    period_start  TEXT    NOT NULL,          -- the pay period's start date (a payday), YYYY-MM-DD
+    amount_cents  INTEGER NOT NULL CHECK (amount_cents >= 0),
+    created_at    TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL
+  );
+  CREATE UNIQUE INDEX period_adjustments_item_period ON period_adjustments(item_id, period_start);
+  `,
 ];
 
 export function openDatabase(dataDir: string): DatabaseSync {

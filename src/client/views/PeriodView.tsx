@@ -1,12 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { diffDays, eachDay } from '../../shared/dates';
 import { periodByIndex } from '../../shared/recurrence';
 import type { Assessment, ExpenseLine, Txn } from '../../shared/types';
 import { api } from '../api';
-import { AssignSelect, ErrorNote, Loading, Money, StepNav, SunGlyph, Swatch, Tag } from '../components/ui';
+import { AssignSelect, Dialog, ErrorNote, Loading, Money, StepNav, SunGlyph, Swatch, Tag } from '../components/ui';
 import { RuleDialog } from '../components/RuleDialog';
 import { useApp, useData } from '../data';
-import { dateDay, dateShort, money, rangeLabel } from '../format';
+import { centsToInput, dateDay, dateShort, money, parseMoneyInput, rangeLabel } from '../format';
 import { shiftPeriod } from '../periods';
 import { href, navigate } from '../router';
 
@@ -304,7 +304,14 @@ function FragmentRows({ label, lines, a }: { label: string; lines: ExpenseLine[]
                 {l.movedFrom && <> · moved from {dateDay(l.movedFrom)}</>}
                 {l.movedTo && <> · moved to {dateDay(l.movedTo)}, doesn’t count here anymore</>}
                 {l.fundBalanceCents != null && <> reserve holds {money(l.fundBalanceCents)}</>}
+                {l.adjustedCents != null && (
+                  <>
+                    {' '}
+                    · adjusted to <Money cents={l.adjustedCents} /> this period
+                  </>
+                )}
                 {l.allocation === 'due' && <MoveAction l={l} a={a} />}
+                {l.allocation !== 'reserve' && <AdjustAction l={l} a={a} />}
               </div>
               {l.allocation === 'spread' && (
                 <div className={`meter ${l.actualCents > l.budgetCents ? 'over' : ''}`} title={`${Math.round(pct)}% used`}>
@@ -314,6 +321,11 @@ function FragmentRows({ label, lines, a }: { label: string; lines: ExpenseLine[]
             </td>
             <td className="r hide-sm">
               <Money cents={l.budgetCents} />
+              {l.adjustedCents != null && l.baseBudgetCents != null && (
+                <s className="muted small" style={{ marginLeft: 6 }}>
+                  {money(l.baseBudgetCents)}
+                </s>
+              )}
             </td>
             <td className="r hide-sm">
               <Money cents={l.actualCents} />
@@ -379,6 +391,120 @@ function MoveAction({ l, a }: { l: ExpenseLine; a: Assessment }) {
         Move to next period →
       </button>
     </>
+  );
+}
+
+function AdjustAction({ l, a }: { l: ExpenseLine; a: Assessment }) {
+  const { refresh, toast } = useApp();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function save(amountCents: number) {
+    setBusy(true);
+    try {
+      await api.setAdjustment(l.itemId, a.period.start, amountCents);
+      refresh();
+      toast(`${l.name} adjusted for this period.`);
+      setOpen(false);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    try {
+      await api.removeAdjustment(l.itemId, a.period.start);
+      refresh();
+      toast(`${l.name} is back to its regular budget for this period.`);
+      setOpen(false);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      {' · '}
+      <button type="button" className="btn ghost small" onClick={() => setOpen(true)}>
+        Adjust for this period
+      </button>
+      <AdjustDialog l={l} a={a} open={open} onClose={() => setOpen(false)} busy={busy} onSave={save} onRemove={remove} />
+    </>
+  );
+}
+
+function AdjustDialog({
+  l,
+  a,
+  open,
+  onClose,
+  busy,
+  onSave,
+  onRemove,
+}: {
+  l: ExpenseLine;
+  a: Assessment;
+  open: boolean;
+  onClose: () => void;
+  busy: boolean;
+  onSave: (amountCents: number) => void;
+  onRemove: () => void;
+}) {
+  // The base for this period: the engine reports it on the line (item amount for due lines,
+  // the daily-rate sum for envelopes).
+  const base = l.baseBudgetCents ?? l.budgetCents;
+  const [text, setText] = useState(centsToInput(l.adjustedCents ?? base));
+  // Re-sync the input whenever the dialog opens, so it always shows the current effective amount.
+  useEffect(() => {
+    if (open) setText(centsToInput(l.adjustedCents ?? base));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, l.key]);
+  const cents = parseMoneyInput(text);
+  const delta = cents != null ? cents - base : null;
+
+  return (
+    <Dialog open={open} onClose={onClose} title={`Adjust ${l.name} for ${rangeLabel(a.period.start, a.period.end)}`}>
+      <form
+        className="form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (cents != null) void onSave(cents);
+        }}
+      >
+        <p className="hint">
+          Regular budget for this period: <s>{money(base)}</s>
+        </p>
+        <label>
+          Budget for this period
+          <input inputMode="decimal" value={text} onChange={(e) => setText(e.target.value)} required autoFocus />
+        </label>
+        {cents != null && delta != null && delta !== 0 && (
+          <p className="hint" aria-live="polite">
+            {delta < 0
+              ? `This releases ${money(-delta)} for this period.`
+              : `This adds ${money(delta)} to this period’s plan.`}
+          </p>
+        )}
+        <div className="actions">
+          {l.adjustedCents != null && (
+            <button type="button" className="btn ghost" disabled={busy} onClick={() => void onRemove()}>
+              Remove adjustment
+            </button>
+          )}
+          <button type="button" className="btn ghost" disabled={busy} onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn primary" disabled={busy || cents == null}>
+            Save
+          </button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 

@@ -7,6 +7,7 @@ import type {
   Item,
   ItemInput,
   OccurrenceMove,
+  PeriodAdjustment,
   Person,
   PersonInput,
   Reserve,
@@ -83,6 +84,17 @@ function toOccurrenceMove(r: Row): OccurrenceMove {
     fromDate: String(r.from_date),
     toDate: String(r.to_date),
     createdAt: String(r.created_at),
+  };
+}
+
+function toPeriodAdjustment(r: Row): PeriodAdjustment {
+  return {
+    id: Number(r.id),
+    itemId: Number(r.item_id),
+    periodStart: String(r.period_start),
+    amountCents: Number(r.amount_cents),
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
   };
 }
 
@@ -201,7 +213,7 @@ export interface IncomingTxn {
 }
 
 export class Repo {
-  constructor(readonly db: DatabaseSync) {}
+  constructor(readonly db: DatabaseSync) { }
 
   tx<T>(fn: () => T): T {
     return inTransaction(this.db, fn);
@@ -332,6 +344,41 @@ export class Repo {
   deleteMove(itemId: number, fromDate: ISODate): boolean {
     return (
       Number(this.db.prepare('DELETE FROM occurrence_moves WHERE item_id = ? AND from_date = ?').run(itemId, fromDate).changes) > 0
+    );
+  }
+
+  // --- period adjustments ----------------------------------------------------
+
+  adjustmentsForItem(itemId: number): PeriodAdjustment[] {
+    return (
+      this.db.prepare('SELECT * FROM period_adjustments WHERE item_id = ? ORDER BY period_start').all(itemId) as Row[]
+    ).map(toPeriodAdjustment);
+  }
+
+  listAdjustments(): PeriodAdjustment[] {
+    return (this.db.prepare('SELECT * FROM period_adjustments ORDER BY item_id, period_start').all() as Row[]).map(
+      toPeriodAdjustment,
+    );
+  }
+
+  upsertAdjustment(itemId: number, periodStart: ISODate, amountCents: number): PeriodAdjustment {
+    const now = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO period_adjustments (item_id, period_start, amount_cents, created_at, updated_at)
+         VALUES ($item, $start, $amount, $now, $now)
+         ON CONFLICT(item_id, period_start) DO UPDATE SET amount_cents = excluded.amount_cents, updated_at = excluded.updated_at`,
+      )
+      .run({ $item: itemId, $start: periodStart, $amount: amountCents, $now: now });
+    return this.adjustmentsForItem(itemId).find((a) => a.periodStart === periodStart)!;
+  }
+
+  deleteAdjustment(itemId: number, periodStart: ISODate): boolean {
+    return (
+      Number(
+        this.db.prepare('DELETE FROM period_adjustments WHERE item_id = ? AND period_start = ?').run(itemId, periodStart)
+          .changes,
+      ) > 0
     );
   }
 

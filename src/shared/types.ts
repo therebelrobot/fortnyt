@@ -153,6 +153,18 @@ export interface OccurrenceMove {
   createdAt: string;
 }
 
+/** A temporary override of a line's budget for one pay period. */
+export interface PeriodAdjustment {
+  id: number;
+  itemId: number;
+  /** the pay period's start date (a payday) */
+  periodStart: ISODate;
+  /** the line's total budget for that period, in cents */
+  amountCents: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Period {
   index: number;
   start: ISODate;
@@ -213,6 +225,10 @@ export interface ExpenseLine {
   movedFrom: ISODate | null;
   /** due lines: this occurrence's natural date was here, but its obligation was moved out to a later date. */
   movedTo: ISODate | null;
+  /** set when a temporary per-period adjustment applies to this line */
+  adjustedCents: number | null;
+  /** the line's budget for this period without any adjustment (for display); null for lines that don't take an adjustment */
+  baseBudgetCents: number | null;
 }
 
 export interface CashCheck {

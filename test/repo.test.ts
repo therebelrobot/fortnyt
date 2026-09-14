@@ -148,3 +148,56 @@ describe('occurrence moves', () => {
     assert.deepEqual(r.allMoves(), []);
   });
 });
+
+describe('period adjustments', () => {
+  it('upserts an adjustment and lists it under the item', () => {
+    const r = repo();
+    const item = r.createItem(itemInput());
+    const adj = r.upsertAdjustment(item.id, '2026-09-04', 10000);
+    assert.equal(adj.itemId, item.id);
+    assert.equal(adj.periodStart, '2026-09-04');
+    assert.equal(adj.amountCents, 10000);
+    assert.deepEqual(r.adjustmentsForItem(item.id).map((a) => a.id), [adj.id]);
+  });
+
+  it('upserting the same (item, period) again updates the amount and bumps updated_at, without duplicating', () => {
+    const r = repo();
+    const item = r.createItem(itemInput());
+    const first = r.upsertAdjustment(item.id, '2026-09-04', 10000);
+    // Force the stored updated_at back so the bump is observable even within one millisecond.
+    r.db.prepare('UPDATE period_adjustments SET updated_at = ?').run('2020-01-01T00:00:00.000Z');
+    const second = r.upsertAdjustment(item.id, '2026-09-04', 25000);
+    const list = r.adjustmentsForItem(item.id);
+    assert.equal(list.length, 1);
+    assert.equal(list[0].id, first.id);
+    assert.equal(list[0].amountCents, 25000);
+    assert.notEqual(second.updatedAt, '2020-01-01T00:00:00.000Z');
+  });
+
+  it('deletes an adjustment by its natural key; a second delete reports nothing removed', () => {
+    const r = repo();
+    const item = r.createItem(itemInput());
+    r.upsertAdjustment(item.id, '2026-09-04', 10000);
+    assert.equal(r.deleteAdjustment(item.id, '2026-09-04'), true);
+    assert.deepEqual(r.adjustmentsForItem(item.id), []);
+    assert.equal(r.deleteAdjustment(item.id, '2026-09-04'), false);
+  });
+
+  it('keeps one item\'s adjustments off another item', () => {
+    const r = repo();
+    const a = r.createItem(itemInput());
+    const b = r.createItem(itemInput({ name: 'Phone' }));
+    r.upsertAdjustment(a.id, '2026-09-04', 10000);
+    assert.deepEqual(r.adjustmentsForItem(b.id), []);
+    assert.equal(r.listAdjustments().length, 1);
+    assert.equal(r.listAdjustments()[0].itemId, a.id);
+  });
+
+  it('cascades when the item is deleted', () => {
+    const r = repo();
+    const item = r.createItem(itemInput());
+    r.upsertAdjustment(item.id, '2026-09-04', 10000);
+    r.deleteItem(item.id);
+    assert.deepEqual(r.listAdjustments(), []);
+  });
+});

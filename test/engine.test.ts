@@ -4,7 +4,7 @@ import { applyLens, assessPeriod, dailyRates, effectiveDate, type EngineData } f
 import { occurrences, periodOf, type PaySchedule } from '../src/shared/recurrence';
 import { parseCents } from '../src/shared/money';
 import { dayOfWeek } from '../src/shared/dates';
-import type { Account, Item, OccurrenceMove, Person, Reserve, Txn } from '../src/shared/types';
+import type { Account, Item, OccurrenceMove, PeriodAdjustment, Person, Reserve, Txn } from '../src/shared/types';
 
 const pay: PaySchedule = { anchor: '2026-09-04', intervalDays: 14 }; // a Friday
 
@@ -62,6 +62,7 @@ function data(
   accounts: Account[] = [],
   reserves: Reserve[] = [],
   moves: OccurrenceMove[] = [],
+  adjustments: PeriodAdjustment[] = [],
 ): EngineData {
   return {
     pay,
@@ -73,6 +74,19 @@ function data(
     txnsForItem: (id, f, t) => txns.filter((x) => x.itemId === id && x.date >= f && x.date <= t),
     txnsForReserve: (id, f, t) => txns.filter((x) => x.reserveId === id && x.itemId == null && x.date >= f && x.date <= t),
     movesForItem: (id) => moves.filter((m) => m.itemId === id),
+    adjustmentsForItem: (id) => adjustments.filter((x) => x.itemId === id),
+  };
+}
+
+let adjSeq = 1;
+function adjustment(itemId: number, periodStart: string, amountCents: number): PeriodAdjustment {
+  return {
+    id: adjSeq++,
+    itemId,
+    periodStart,
+    amountCents,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
   };
 }
 
@@ -379,5 +393,115 @@ describe('people', () => {
     assert.equal(leif.totals.unplannedSpendCents, 800);
     // The two shares add back up to the household.
     assert.equal(rowan.totals.leftoverCents + leif.totals.leftoverCents, 350000 - 100000 - 5000);
+  });
+});
+
+describe('period adjustments', () => {
+  // startDate keeps the line's first due date inside the window under test — otherwise every
+  // earlier payday would be an unpaid carry-over occurrence muddying expenses[0].
+  const pets = item({ name: 'Pets', kind: 'expense', amountCents: 30000, cadence: 'paycheck', startDate: '2026-09-01' });
+  const current = periodOf('2026-09-10', pay, '2026-09-10'); // Sep 4–17
+  const next = periodOf('2026-09-20', pay, '2026-09-10'); // Sep 18–Oct 1
+
+  it('replaces an unpaid due line\'s budget for the period, releasing the difference into the leftover', () => {
+    const base = assessPeriod(data([pets], [], '2026-09-10'), current);
+    assert.equal(base.expenses[0].budgetCents, 30000);
+    assert.equal(base.expenses[0].committedCents, 30000);
+    assert.equal(base.expenses[0].remainingCents, 30000);
+
+    const adj = assessPeriod(data([pets], [], '2026-09-10', [], [], [], [adjustment(pets.id, current.start, 10000)]), current);
+    const line = adj.expenses[0];
+    assert.equal(line.budgetCents, 10000);
+    assert.equal(line.committedCents, 10000);
+    assert.equal(line.remainingCents, 10000);
+    // The released $200 shows up in both leftover numbers.
+    assert.equal(adj.totals.leftoverCents - base.totals.leftoverCents, 20000);
+    assert.equal(adj.totals.planLeftoverCents - base.totals.planLeftoverCents, 20000);
+  });
+
+  it('does not touch any other period', () => {
+    const adj = assessPeriod(data([pets], [], '2026-09-10', [], [], [], [adjustment(pets.id, current.start, 10000)]), next);
+    // The next period's own occurrence (Sep 18) uses the base amount.
+    const line = adj.expenses.find((l) => l.date === next.start)!;
+    assert.equal(line.budgetCents, 30000);
+    assert.equal(line.committedCents, 30000);
+    assert.equal(line.adjustedCents, null);
+  });
+
+  it('keeps a paid occurrence at its actual amount, not the adjusted figure', () => {
+    const txns = [txn('2026-09-05', -30000, pets.id)];
+    const a = assessPeriod(data([pets], txns, '2026-09-10', [], [], [], [adjustment(pets.id, current.start, 10000)]), current);
+    const line = a.expenses[0];
+    assert.equal(line.status, 'paid');
+    assert.equal(line.committedCents, 30000); // the real $300 paid, not the $100 adjustment
+    assert.equal(line.budgetCents, 10000);
+    assert.equal(line.remainingCents, 0);
+  });
+
+  it('replaces a spread line\'s envelope for the period', () => {
+    const groceries = item({ name: 'Groceries', kind: 'expense', amountCents: 60000, cadence: 'monthly', dayOfMonth: 1, allocation: 'spread' });
+    const base = assessPeriod(data([groceries], [], '2026-09-10'), current);
+    assert.equal(base.expenses[0].budgetCents, 28000); // 14 September days × $600/30
+
+    const a = assessPeriod(data([groceries], [], '2026-09-10', [], [], [], [adjustment(groceries.id, current.start, 10000)]), current);
+    const line = a.expenses[0];
+    assert.equal(line.budgetCents, 10000);
+    assert.equal(line.committedCents, 10000); // open period: the smaller envelope is what's spoken for
+    assert.equal(line.remainingCents, 10000);
+    assert.equal(a.totals.leftoverCents - base.totals.leftoverCents, 18000);
+  });
+
+  it('on a closed spread period, only the budget moves — committed stays the actual spend', () => {
+    const groceries = item({ name: 'Groceries', kind: 'expense', amountCents: 60000, cadence: 'monthly', dayOfMonth: 1, allocation: 'spread' });
+    const txns = [txn('2026-09-05', -31000, groceries.id)];
+    const base = assessPeriod(data([groceries], txns, '2026-10-01'), periodOf('2026-09-10', pay, '2026-10-01'));
+    const a = assessPeriod(data([groceries], txns, '2026-10-01', [], [], [], [adjustment(groceries.id, current.start, 10000)]), periodOf('2026-09-10', pay, '2026-10-01'));
+    assert.equal(a.expenses[0].status, 'closed');
+    assert.equal(a.expenses[0].committedCents, 31000); // what was really spent
+    assert.equal(a.expenses[0].budgetCents, 10000);
+    assert.equal(a.expenses[0].remainingCents, 0);
+    assert.equal(a.totals.leftoverCents, base.totals.leftoverCents);
+    assert.equal(a.totals.planLeftoverCents - base.totals.planLeftoverCents, 18000);
+  });
+
+  it('adjusting to 0 commits nothing and releases the full base', () => {
+    const base = assessPeriod(data([pets], [], '2026-09-10'), current);
+    const a = assessPeriod(data([pets], [], '2026-09-10', [], [], [], [adjustment(pets.id, current.start, 0)]), current);
+    const line = a.expenses[0];
+    assert.equal(line.budgetCents, 0);
+    assert.equal(line.committedCents, 0);
+    assert.equal(line.remainingCents, 0);
+    assert.equal(a.totals.leftoverCents - base.totals.leftoverCents, 30000);
+  });
+
+  it('adjusting up speaks for more, lowering the leftover', () => {
+    const base = assessPeriod(data([pets], [], '2026-09-10'), current);
+    const a = assessPeriod(data([pets], [], '2026-09-10', [], [], [], [adjustment(pets.id, current.start, 50000)]), current);
+    assert.equal(a.expenses[0].committedCents, 50000);
+    assert.equal(a.totals.leftoverCents - base.totals.leftoverCents, -20000);
+  });
+
+  it('does not adjust a carried-over occurrence from an earlier period', () => {
+    const cable = item({ name: 'Cable', kind: 'expense', amountCents: 8000, cadence: 'monthly', dayOfMonth: 5, createdAt: '2026-08-25T00:00:00.000Z' });
+    const today = '2026-09-25'; // current period Sep 18–Oct 1
+    const a = assessPeriod(
+      data([cable], [], today, [], [], [], [adjustment(cable.id, '2026-09-18', 1000)]),
+      periodOf(today, pay, today),
+    );
+    assert.equal(a.expenses.length, 1);
+    assert.equal(a.expenses[0].carriedOver, true);
+    assert.equal(a.expenses[0].committedCents, 8000); // the fixed debt from when it was due
+    assert.equal(a.expenses[0].adjustedCents, null);
+    assert.equal(a.expenses[0].baseBudgetCents, null);
+  });
+
+  it('reports adjustedCents and baseBudgetCents on the line', () => {
+    const adj = assessPeriod(data([pets], [], '2026-09-10', [], [], [], [adjustment(pets.id, current.start, 10000)]), current);
+    assert.equal(adj.expenses[0].adjustedCents, 10000);
+    assert.equal(adj.expenses[0].baseBudgetCents, 30000);
+
+    const plain = assessPeriod(data([pets], [], '2026-09-10'), current);
+    assert.equal(plain.expenses[0].adjustedCents, null);
+    assert.equal(plain.expenses[0].baseBudgetCents, 30000);
   });
 });
