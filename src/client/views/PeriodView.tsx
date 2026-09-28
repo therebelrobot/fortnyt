@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { diffDays, eachDay } from '../../shared/dates';
 import { periodByIndex } from '../../shared/recurrence';
-import type { Assessment, ExpenseLine, Txn } from '../../shared/types';
+import type { Allocation, Assessment, ExpenseLine, ExpenseStatus, ISODate, Txn } from '../../shared/types';
 import { api } from '../api';
-import { AssignSelect, Dialog, ErrorNote, Loading, Money, StepNav, SunGlyph, Swatch, Tag } from '../components/ui';
+import { AssignSelect, Dialog, ErrorNote, Loading, Money, Segmented, StepNav, SunGlyph, Swatch, Tag } from '../components/ui';
 import { RuleDialog } from '../components/RuleDialog';
 import { useApp, useData } from '../data';
 import { centsToInput, dateDay, dateShort, money, parseMoneyInput, rangeLabel } from '../format';
@@ -15,6 +15,8 @@ export function PeriodView({ params }: { params: URLSearchParams }) {
   const date = params.get('d') ?? status?.today;
   const { data, error } = useData(() => api.assessment(date ?? undefined, personId), [date]);
   const [ruleFrom, setRuleFrom] = useState<Txn | null>(null);
+  const rawGroup = params.get('groupBy');
+  const groupBy: GroupBy = rawGroup === 'bucket' || rawGroup === 'category-bucket' ? rawGroup : 'category';
 
   if (error && !data) return <ErrorNote error={error} />;
   if (!data || !pay || !status) return <Loading />;
@@ -60,7 +62,7 @@ export function PeriodView({ params }: { params: URLSearchParams }) {
 
       <div className="cols section">
         <Income a={a} />
-        <Expenses a={a} />
+        <Expenses a={a} groupBy={groupBy} />
       </div>
 
       {a.reserves.length > 0 && <Reserves a={a} />}
@@ -234,17 +236,169 @@ function Income({ a }: { a: Assessment }) {
   );
 }
 
-function Expenses({ a }: { a: Assessment }) {
-  const groups: [string, ExpenseLine[]][] = [
-    ['On their dates', a.expenses.filter((l) => l.allocation === 'due')],
-    ['Envelopes', a.expenses.filter((l) => l.allocation === 'spread')],
-    ['Funds (saved into reserves)', a.expenses.filter((l) => l.allocation === 'reserve')],
-  ];
+type GroupBy = 'category' | 'bucket' | 'category-bucket';
+
+const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
+  { value: 'category', label: 'Category' },
+  { value: 'bucket', label: 'Cost' },
+  { value: 'category-bucket', label: 'Category + cost' },
+];
+
+const BUCKETS: { max: number | null; label: string }[] = [
+  { max: 500, label: 'Under $5' },
+  { max: 1500, label: '$5–$15' },
+  { max: 2500, label: '$15–$25' },
+  { max: 5000, label: '$25–$50' },
+  { max: 10000, label: '$50–$100' },
+  { max: null, label: '$100 and up' },
+];
+
+function bucketOf(cents: number): number {
+  for (let i = 0; i < BUCKETS.length; i++) {
+    const max = BUCKETS[i].max;
+    if (max == null || cents < max) return i;
+  }
+  return BUCKETS.length - 1;
+}
+
+/** A rendered row: one occurrence, or several occurrences of the same item collapsed into one. */
+interface RowModel {
+  key: string;
+  itemId: number;
+  name: string;
+  color: string | null;
+  allocation: Allocation;
+  budgetCents: number;
+  actualCents: number;
+  committedCents: number;
+  status: ExpenseStatus;
+  dates: ISODate[];
+  carriedOver: boolean;
+  movedFrom: ISODate | null;
+  movedTo: ISODate | null;
+  fundBalanceCents: number | null;
+  adjustedCents: number | null;
+  baseBudgetCents: number | null;
+  /** first occurrence — used for per-item actions like adjusting */
+  first: ExpenseLine;
+  /** set only when the row is a single occurrence — enables moving that occurrence */
+  single: ExpenseLine | null;
+}
+
+function toRow(l: ExpenseLine): RowModel {
+  return {
+    key: l.key,
+    itemId: l.itemId,
+    name: l.name,
+    color: l.color,
+    allocation: l.allocation,
+    budgetCents: l.budgetCents,
+    actualCents: l.actualCents,
+    committedCents: l.committedCents,
+    status: l.status,
+    dates: l.date ? [l.date] : [],
+    carriedOver: l.carriedOver,
+    movedFrom: l.movedFrom,
+    movedTo: l.movedTo,
+    fundBalanceCents: l.fundBalanceCents,
+    adjustedCents: l.adjustedCents,
+    baseBudgetCents: l.baseBudgetCents,
+    first: l,
+    single: l,
+  };
+}
+
+/** Collapse repeated occurrences of the same item (e.g. a weekly line in a biweekly period) into one row. */
+function collapseByItem(lines: ExpenseLine[]): RowModel[] {
+  const byItem = new Map<number, ExpenseLine[]>();
+  for (const l of lines) byItem.set(l.itemId, [...(byItem.get(l.itemId) ?? []), l]);
+  return [...byItem.values()].map((ls) => {
+    const first = ls[0];
+    const status: ExpenseStatus = ls.some((l) => l.status === 'overdue')
+      ? 'overdue'
+      : ls.some((l) => l.status === 'upcoming')
+        ? 'upcoming'
+        : ls.some((l) => l.status === 'paid')
+          ? 'paid'
+          : first.status;
+    return {
+      key: `item:${first.itemId}`,
+      itemId: first.itemId,
+      name: first.name,
+      color: first.color,
+      allocation: first.allocation,
+      budgetCents: ls.reduce((s, l) => s + l.budgetCents, 0),
+      actualCents: ls.reduce((s, l) => s + l.actualCents, 0),
+      committedCents: ls.reduce((s, l) => s + l.committedCents, 0),
+      status,
+      dates: ls.map((l) => l.date).filter((d): d is ISODate => d != null),
+      carriedOver: ls.some((l) => l.carriedOver),
+      movedFrom: ls.find((l) => l.movedFrom)?.movedFrom ?? null,
+      movedTo: null,
+      fundBalanceCents: first.fundBalanceCents,
+      adjustedCents: first.adjustedCents,
+      baseBudgetCents: first.baseBudgetCents,
+      first,
+      single: ls.length === 1 ? ls[0] : null,
+    };
+  });
+}
+
+interface Group {
+  key: string;
+  label: string;
+  total: number;
+  rows: RowModel[];
+  subgroups?: Group[];
+}
+
+function buildGroups(rest: ExpenseLine[], groupBy: GroupBy): Group[] {
+  if (groupBy === 'bucket') {
+    const groups: Group[] = BUCKETS.map((b, i) => ({ key: `b${i}`, label: b.label, total: 0, rows: [] }));
+    for (const l of rest) {
+      const g = groups[bucketOf(l.budgetCents)];
+      g.rows.push(toRow(l));
+      g.total += l.committedCents;
+    }
+    return groups.filter((g) => g.rows.length > 0);
+  }
+  const rows = collapseByItem(rest);
+  const cats = new Map<string, RowModel[]>();
+  for (const r of rows) {
+    const k = r.first.group || 'Other';
+    cats.set(k, [...(cats.get(k) ?? []), r]);
+  }
+  const keys = [...cats.keys()].sort((a, b) => (a === 'Other' ? 1 : b === 'Other' ? -1 : a.localeCompare(b)));
+  return keys.map((k) => {
+    const list = cats.get(k)!;
+    const total = list.reduce((s, r) => s + r.committedCents, 0);
+    if (groupBy === 'category') return { key: `c:${k}`, label: k, total, rows: list };
+    const subs: Group[] = BUCKETS.map((b, i) => ({ key: `c:${k}:b${i}`, label: b.label, total: 0, rows: [] }));
+    for (const r of list) {
+      const g = subs[bucketOf(r.budgetCents)];
+      g.rows.push(r);
+      g.total += r.committedCents;
+    }
+    return { key: `c:${k}`, label: k, total, rows: [], subgroups: subs.filter((g) => g.rows.length > 0) };
+  });
+}
+
+function Expenses({ a, groupBy }: { a: Assessment; groupBy: GroupBy }) {
+  // Deferred lines (obligations moved to a later period) always get their own section,
+  // regardless of the grouping.
+  const deferred = a.expenses.filter((l) => l.status === 'deferred');
+  const rest = a.expenses.filter((l) => l.status !== 'deferred');
+  const groups = buildGroups(rest, groupBy);
+  const setGroupBy = (v: GroupBy) =>
+    navigate('period', { d: a.period.start, groupBy: v === 'category' ? undefined : v }, true);
   return (
     <section>
       <header className="sec-head">
         <h2>Going out</h2>
       </header>
+      <div className="toolbar" style={{ marginBottom: '0.5rem' }}>
+        <Segmented<GroupBy> label="Group by" value={groupBy} onChange={setGroupBy} options={GROUP_OPTIONS} />
+      </div>
       <table className="lines">
         <thead>
           <tr>
@@ -257,11 +411,17 @@ function Expenses({ a }: { a: Assessment }) {
           </tr>
         </thead>
         <tbody>
-          {groups.map(([label, lines]) =>
-            lines.length === 0 ? null : (
-              <FragmentRows key={label} label={label} lines={lines} a={a} />
-            ),
+          {deferred.length > 0 && (
+            <GroupRows
+              label="Deferred — moved to a later period"
+              total={deferred.reduce((s, l) => s + l.budgetCents, 0)}
+              rows={deferred.map(toRow)}
+              a={a}
+            />
           )}
+          {groups.map((g) => (
+            <GroupRows key={g.key} label={g.label} total={g.total} rows={g.rows} subgroups={g.subgroups} a={a} />
+          ))}
           {a.unplanned.spendCents > 0 && (
             <tr>
               <td>
@@ -282,61 +442,90 @@ function Expenses({ a }: { a: Assessment }) {
   );
 }
 
-function FragmentRows({ label, lines, a }: { label: string; lines: ExpenseLine[]; a: Assessment }) {
+function GroupRows({
+  label,
+  total,
+  rows,
+  subgroups,
+  sub,
+  a,
+}: {
+  label: string;
+  total: number;
+  rows: RowModel[];
+  subgroups?: Group[];
+  sub?: boolean;
+  a: Assessment;
+}) {
   return (
     <>
-      <tr className="subhead">
-        <td colSpan={4}>{label}</td>
+      <tr className={sub ? 'subhead sub' : 'subhead'}>
+        <td colSpan={3}>{label}</td>
+        <td className="r">
+          <Money cents={total} />
+        </td>
       </tr>
-      {lines.map((l) => {
-        const pct = l.budgetCents > 0 ? Math.min(100, (l.actualCents / l.budgetCents) * 100) : 0;
-        return (
-          <tr key={l.key} className={l.status === 'deferred' ? 'deferred' : ''}>
-            <td>
-              <div className="name">
-                <Swatch color={l.color} />
-                <span>{l.name}</span>
-              </div>
-              <div className="desc-sub">
-                {l.date ? `${dateDay(l.date)} ` : ''}
-                <Tag status={l.status} />
-                {l.carriedOver && <> · from an earlier period, still unpaid</>}
-                {l.movedFrom && <> · moved from {dateDay(l.movedFrom)}</>}
-                {l.movedTo && <> · moved to {dateDay(l.movedTo)}, doesn’t count here anymore</>}
-                {l.fundBalanceCents != null && <> reserve holds {money(l.fundBalanceCents)}</>}
-                {l.adjustedCents != null && (
-                  <>
-                    {' '}
-                    · adjusted to <Money cents={l.adjustedCents} /> this period
-                  </>
-                )}
-                {l.allocation === 'due' && <MoveAction l={l} a={a} />}
-                {l.allocation !== 'reserve' && <AdjustAction l={l} a={a} />}
-              </div>
-              {l.allocation === 'spread' && (
-                <div className={`meter ${l.actualCents > l.budgetCents ? 'over' : ''}`} title={`${Math.round(pct)}% used`}>
-                  <span style={{ width: `${pct}%` }} />
-                </div>
-              )}
-            </td>
-            <td className="r hide-sm">
-              <Money cents={l.budgetCents} />
-              {l.adjustedCents != null && l.baseBudgetCents != null && (
-                <s className="muted small" style={{ marginLeft: 6 }}>
-                  {money(l.baseBudgetCents)}
-                </s>
-              )}
-            </td>
-            <td className="r hide-sm">
-              <Money cents={l.actualCents} />
-            </td>
-            <td className="r">
-              <Money cents={l.committedCents} />
-            </td>
-          </tr>
-        );
-      })}
+      {rows.map((r) => (
+        <LineRow key={r.key} r={r} a={a} />
+      ))}
+      {subgroups?.map((g) => (
+        <GroupRows key={g.key} label={g.label} total={g.total} rows={g.rows} sub a={a} />
+      ))}
     </>
+  );
+}
+
+function LineRow({ r, a }: { r: RowModel; a: Assessment }) {
+  const pct = r.budgetCents > 0 ? Math.min(100, (r.actualCents / r.budgetCents) * 100) : 0;
+  return (
+    <tr className={r.status === 'deferred' ? 'deferred' : ''}>
+      <td>
+        <div className="name">
+          <Swatch color={r.color} />
+          <span>{r.name}</span>
+        </div>
+        <div className="desc-sub">
+          {r.dates.length > 1 && (
+            <>
+              {r.dates.length}× · {r.dates.map(dateDay).join(', ')}{' '}
+            </>
+          )}
+          {r.dates.length === 1 && <>{dateDay(r.dates[0])} </>}
+          <Tag status={r.status} />
+          {r.carriedOver && <> · from an earlier period, still unpaid</>}
+          {r.movedFrom && <> · moved from {dateDay(r.movedFrom)}</>}
+          {r.movedTo && <> · moved to {dateDay(r.movedTo)}, doesn’t count here anymore</>}
+          {r.fundBalanceCents != null && <> reserve holds {money(r.fundBalanceCents)}</>}
+          {r.adjustedCents != null && (
+            <>
+              {' '}
+              · adjusted to <Money cents={r.adjustedCents} /> this period
+            </>
+          )}
+          {r.allocation === 'due' && r.single && <MoveAction l={r.single} a={a} />}
+          {r.allocation !== 'reserve' && <AdjustAction l={r.first} a={a} />}
+        </div>
+        {r.allocation === 'spread' && (
+          <div className={`meter ${r.actualCents > r.budgetCents ? 'over' : ''}`} title={`${Math.round(pct)}% used`}>
+            <span style={{ width: `${pct}%` }} />
+          </div>
+        )}
+      </td>
+      <td className="r hide-sm">
+        <Money cents={r.budgetCents} />
+        {r.adjustedCents != null && r.baseBudgetCents != null && (
+          <s className="muted small" style={{ marginLeft: 6 }}>
+            {money(r.baseBudgetCents)}
+          </s>
+        )}
+      </td>
+      <td className="r hide-sm">
+        <Money cents={r.actualCents} />
+      </td>
+      <td className="r">
+        <Money cents={r.committedCents} />
+      </td>
+    </tr>
   );
 }
 

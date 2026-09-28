@@ -528,6 +528,12 @@ table.lines tr.subhead td {
   color: var(--ink-2);
 }
 
+table.lines tr.subhead.sub td {
+  padding-top: 0.35rem;
+  padding-left: 1.4rem;
+  font-weight: 550;
+}
+
 table.lines .r,
 table.lines th.r {
   text-align: right;
